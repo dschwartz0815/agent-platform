@@ -20,6 +20,7 @@ from app.schemas.graph import (
     GraphSummary,
     GraphUpdate,
     GraphVersionOut,
+    GraphVersionSummary,
 )
 from app.services.publishing import PublishValidationError, validate_publishable
 
@@ -324,3 +325,43 @@ async def publish_graph(
     await db.flush()
     await db.refresh(version)
     return version
+
+
+@router.get(
+    "/{graph_id}/versions",
+    response_model=list[GraphVersionSummary],
+)
+async def list_graph_versions(
+    graph_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    graph = await db.get(Graph, graph_id)
+    if not graph:
+        raise HTTPException(status_code=404, detail="Graph not found")
+    result = await db.execute(
+        select(GraphVersion)
+        .where(GraphVersion.graph_id == graph_id)
+        .order_by(GraphVersion.version.desc())
+    )
+    return result.scalars().all()
+
+
+@router.get(
+    "/{graph_id}/versions/{version}",
+    response_model=GraphVersionOut,
+)
+async def get_graph_version(
+    graph_id: uuid.UUID,
+    version: int,
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(GraphVersion).where(
+            GraphVersion.graph_id == graph_id,
+            GraphVersion.version == version,
+        )
+    )
+    gv = result.scalar_one_or_none()
+    if not gv:
+        raise HTTPException(status_code=404, detail=f"Version {version} not found")
+    return gv
