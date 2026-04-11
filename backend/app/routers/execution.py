@@ -1,15 +1,15 @@
 import json
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
-from app.engine.runner import stream_graph
+from app.engine.persistence import run_graph
 from app.models.agent import Agent
-from app.models.graph import Graph
+from app.models.graph import Graph, GraphVersion
 from app.models.mcp_server import MCPServer
 from app.schemas.execution import RunRequest
 
@@ -17,49 +17,68 @@ router = APIRouter(prefix="/graphs", tags=["execution"])
 
 
 @router.post("/{graph_id}/run")
-async def run_graph(
+async def run_graph_endpoint(
     graph_id: uuid.UUID,
     body: RunRequest,
+    version: int | None = Query(default=None, description="Pin to a specific published version"),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Stream graph execution as Server-Sent Events.
+    Stream graph execution as Server-Sent Events with full run persistence.
 
-    Each event is a JSON line:
+    Events emitted:
+      data: {"event": "run_started", "node": null, "data": {"run_id": "..."}}
       data: {"event": "node_start", "node": "classify", "data": null}
-      data: {"event": "token", "node": "classify", "data": "The risk is..."}
-      data: {"event": "node_end", "node": "classify", "data": {"context": {...}}}
+      data: {"event": "node_end", "node": "classify", "data": {...}}
       data: {"event": "done", "node": null, "data": {}}
-      data: {"event": "error", "node": null, "data": "...message..."}
+      data: {"event": "error", "node": null, "data": "..."}
+
+    Query params:
+      - version: if provided, executes the pinned graph_version.definition_json
+        and tags the run with graph_version_id. If omitted, runs the live draft
+        and leaves graph_version_id null.
     """
     graph = await db.get(Graph, graph_id)
     if not graph:
         raise HTTPException(status_code=404, detail="Graph not found")
 
-    definition = graph.definition_json
-    if not definition:
+    # Resolve which definition to execute
+    graph_version_id: uuid.UUID | None = None
+    definition: dict
+    if version is not None:
+        v_result = await db.execute(
+            select(GraphVersion).where(
+                GraphVersion.graph_id == graph_id,
+                GraphVersion.version == version,
+            )
+        )
+        gv = v_result.scalar_one_or_none()
+        if not gv:
+            raise HTTPException(status_code=404, detail=f"Version {version} not found")
+        graph_version_id = gv.id
+        definition = gv.definition_json
+    else:
+        definition = graph.definition_json
+
+    if not definition or not definition.get("nodes"):
         raise HTTPException(status_code=422, detail="Graph has no definition")
 
-    # Collect MCP server IDs referenced by any node
+    # Collect MCP server / agent refs from the definition
     mcp_server_ids: set[str] = set()
     agent_ids: set[str] = set()
-
     for node in definition.get("nodes", []):
-        cfg = node.get("config", {})
+        cfg = node.get("config") or {}
         if sid := cfg.get("mcp_server_id"):
             mcp_server_ids.add(str(sid))
-        for sid in cfg.get("mcp_server_ids", []):
+        for sid in cfg.get("mcp_server_ids") or []:
             mcp_server_ids.add(str(sid))
         if aid := cfg.get("agent_id"):
             agent_ids.add(str(aid))
 
-    # Load MCP servers
     mcp_servers: dict[str, dict] = {}
     if mcp_server_ids:
         uuids = [uuid.UUID(s) for s in mcp_server_ids]
-        result = await db.execute(
-            select(MCPServer).where(MCPServer.id.in_(uuids))
-        )
+        result = await db.execute(select(MCPServer).where(MCPServer.id.in_(uuids)))
         for srv in result.scalars().all():
             mcp_servers[str(srv.id)] = {
                 "transport": srv.transport,
@@ -69,13 +88,10 @@ async def run_graph(
                 "env_vars": srv.env_vars,
             }
 
-    # Load A2A agents
     agents: dict[str, dict] = {}
     if agent_ids:
         uuids = [uuid.UUID(s) for s in agent_ids]
-        result = await db.execute(
-            select(Agent).where(Agent.id.in_(uuids))
-        )
+        result = await db.execute(select(Agent).where(Agent.id.in_(uuids)))
         for ag in result.scalars().all():
             agents[str(ag.id)] = {
                 "url": ag.url,
@@ -84,8 +100,17 @@ async def run_graph(
             }
 
     async def event_stream():
-        async for event in stream_graph(definition, mcp_servers, body.input, agents):
-            yield f"data: {json.dumps(event)}\n\n"
+        async for event in run_graph(
+            db=db,
+            graph=graph,
+            graph_version_id=graph_version_id,
+            trigger_source="editor_test",
+            run_input=body.input,
+            mcp_servers=mcp_servers,
+            agents=agents,
+            definition=definition,
+        ):
+            yield f"data: {json.dumps(event, default=str)}\n\n"
 
     return StreamingResponse(
         event_stream(),
