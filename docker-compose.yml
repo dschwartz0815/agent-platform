@@ -1,5 +1,3 @@
-version: "3.9"
-
 # Canonical dev loop: docker compose up --build
 #
 # Required env vars (set in .env or export before running):
