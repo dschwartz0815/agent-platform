@@ -1,0 +1,86 @@
+version: "3.9"
+
+# Canonical dev loop: docker compose up --build
+#
+# Required env vars (set in .env or export before running):
+#   ANTHROPIC_API_KEY  — your Anthropic API key
+#
+# Optional env vars (have sane defaults for local dev):
+#   POSTGRES_PASSWORD  — Postgres password (default: agent_dev, change for any shared env)
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: agent_platform
+      POSTGRES_USER: agent
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agent_dev}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agent -d agent_platform"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app        # hot-reload: code changes take effect immediately
+    environment:
+      DATABASE_URL: postgresql+asyncpg://agent:${POSTGRES_PASSWORD:-agent_dev}@postgres:5432/agent_platform
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?Set ANTHROPIC_API_KEY in .env}
+      DEBUG: "true"
+      LOG_LEVEL: INFO
+    env_file:
+      - path: .env
+        required: false       # .env is optional; env vars can be set externally
+    depends_on:
+      postgres:
+        condition: service_healthy
+      seed-agent:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s       # allow time for migrations + seed on first run
+
+  seed-agent:
+    build:
+      context: ./backend
+      dockerfile: seed_services/Dockerfile
+    ports:
+      - "8001:8001"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app       # hot-reload: vite picks up changes
+      - /app/node_modules     # keep container node_modules separate from host
+    environment:
+      # Vite proxy target — must be the Docker service name, NOT localhost
+      # (localhost inside this container is the frontend container, not the backend)
+      VITE_API_URL: http://backend:8000
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  postgres_data:              # named volume — Postgres data survives container restarts
