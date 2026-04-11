@@ -4,7 +4,10 @@ import type {
   AgentCreate,
   AgentUpdate,
   Graph,
+  GraphPublishBody,
   GraphSummary,
+  GraphVersion,
+  GraphVersionSummary,
   MCPServer,
   MCPServerCreate,
   MCPServerUpdate,
@@ -35,6 +38,29 @@ export const updateGraph = (
 
 export const cloneGraph = (id: string): Promise<Graph> =>
   api.post(`/graphs/${id}/clone`).then((r) => r.data);
+
+export const patchGraph = (
+  id: string,
+  body: {
+    name?: string;
+    description?: string | null;
+    slug?: string;
+    input_schema?: Record<string, unknown> | null;
+    output_schema?: Record<string, unknown> | null;
+    retention_days?: number;
+  }
+): Promise<Graph> => api.patch(`/graphs/${id}`, body).then((r) => r.data);
+
+export const publishGraph = (
+  id: string,
+  body: GraphPublishBody
+): Promise<GraphVersion> => api.post(`/graphs/${id}/publish`, body).then((r) => r.data);
+
+export const listGraphVersions = (id: string): Promise<GraphVersionSummary[]> =>
+  api.get(`/graphs/${id}/versions`).then((r) => r.data);
+
+export const getGraphVersion = (id: string, version: number): Promise<GraphVersion> =>
+  api.get(`/graphs/${id}/versions/${version}`).then((r) => r.data);
 
 export const deleteGraph = (id: string): Promise<void> =>
   api.delete(`/graphs/${id}`).then(() => undefined);

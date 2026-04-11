@@ -29,6 +29,13 @@ export interface Graph {
   edges: GraphEdge[];
   created_at: string;
   updated_at: string;
+  slug: string | null;
+  input_schema: Record<string, unknown> | null;
+  output_schema: Record<string, unknown> | null;
+  latest_published_version_id: string | null;
+  latest_version_number: number | null;
+  retention_days: number;
+  test_examples: unknown[] | null;
 }
 
 export interface GraphSummary {
@@ -41,6 +48,8 @@ export interface GraphSummary {
   org_id: string;
   created_at: string;
   updated_at: string;
+  slug: string | null;
+  latest_version_number: number | null;
 }
 
 export interface MCPTool {
@@ -131,4 +140,23 @@ export interface Usage {
   graph_id: string;
   graph_name: string;
   node_key: string;
+}
+
+export interface GraphVersionSummary {
+  id: string;
+  version: number;
+  published_by: string;
+  published_at: string;
+  notes: string | null;
+}
+
+export interface GraphVersion extends GraphVersionSummary {
+  graph_id: string;
+  definition_json: Record<string, unknown>;
+  input_schema: Record<string, unknown> | null;
+  output_schema: Record<string, unknown> | null;
+}
+
+export interface GraphPublishBody {
+  notes?: string | null;
 }
