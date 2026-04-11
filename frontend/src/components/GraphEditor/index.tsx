@@ -64,6 +64,7 @@ import { NodePalette } from "./sidebar/NodePalette";
 import { PropertiesPanel } from "./sidebar/PropertiesPanel";
 import { EdgePropertiesPanel, type EdgeData } from "./sidebar/EdgePropertiesPanel";
 import { RunPanel } from "../RunPanel";
+import { SchemasDrawer } from "./SchemasDrawer";
 
 interface Props {
   graphId: string;
@@ -155,6 +156,7 @@ export function GraphEditor({ graphId, onBack }: Props) {
   const [selection, setSelection] = useState<Selection>(null);
   const [activeTab, setActiveTab] = useState<"palette" | "properties" | "run">("palette");
   const [dirty, setDirty] = useState(false);
+  const [schemasOpen, setSchemasOpen] = useState(false);
 
   const { data: graph, isLoading } = useQuery<Graph>({
     queryKey: ["graph", graphId],
@@ -321,6 +323,9 @@ export function GraphEditor({ graphId, onBack }: Props) {
           {dirty && <span style={{ color: "#f59e0b", fontSize: 12 }}>● unsaved</span>}
         </div>
         <div style={{ display: "flex", gap: 8 }}>
+          <button style={styles.toolbarBtn} onClick={() => setSchemasOpen(true)}>
+            Schemas
+          </button>
           <button
             style={styles.toolbarBtn}
             onClick={() => cloneMut.mutate()}
@@ -419,6 +424,14 @@ export function GraphEditor({ graphId, onBack }: Props) {
           </ReactFlow>
         </div>
       </div>
+
+      {graph && (
+        <SchemasDrawer
+          open={schemasOpen}
+          onClose={() => setSchemasOpen(false)}
+          graph={graph}
+        />
+      )}
     </div>
   );
 }
