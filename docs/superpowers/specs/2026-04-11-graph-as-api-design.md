@@ -37,6 +37,8 @@ Explicitly deferred to future work:
 - OAuth / OIDC federation (Okta, Azure AD, Google Workspace SSO)
 - OpenAPI spec / Postman collection exports
 - Permanent webhook subscriptions (only per-request `webhook_url` for now)
+- `Idempotency-Key` header support (retry dedup; adds trivially later on top of the `runs` table)
+- Output schema validation (output schemas are documentation only; the runner does not validate responses against the declared shape)
 - Rate limiting and quotas per key
 - Multi-team orgs (namespace URL is ready; data model stays single-org-per-namespace)
 - Cost tracking or billing computation (token usage is stored; cost derivation is a later feature)
@@ -172,7 +174,7 @@ One row per webhook delivery attempt.
 
 ### 5.3 Migration
 
-Single Alembic migration adding all five new tables and all new columns. Every new column is nullable or has a default, so the existing seeded graph upgrades cleanly without data rewrite. Indexes:
+Single Alembic migration adding all five new tables and all new columns. Every new column is nullable or has a default, so the existing seeded graph upgrades cleanly without data rewrite. The migration must also **backfill `orgs.slug`** for the existing seeded "Demo Org" row (set to `demo`) and **backfill `graphs.slug`** for the seeded "Change Request Risk Analyzer" (set to `change-risk-analyzer`) before enforcing the unique constraint — otherwise the constraint will fail on a non-empty DB. Indexes:
 - `graph_versions(graph_id, version)` unique
 - `api_keys(key_hash)` for the auth middleware lookup
 - `runs(graph_id, started_at desc)` for the Runs tab list query
@@ -224,10 +226,10 @@ GET  /v1/runs/{run_id}/stream             re-attach to an in-flight stream
 }
 ```
 
-**Errors:**
+**Errors** (checked in this order, to avoid leaking existence of out-of-scope graphs):
 - `401` — missing or invalid `Authorization` header
-- `403` — valid key but scope excludes this graph
-- `404` — `{org}/{slug}` or pinned `@vN` does not exist
+- `404` — `{org}/{slug}` or pinned `@vN` does not exist, OR the key's scope excludes this graph (both conditions return 404 to avoid a scope-enumeration oracle)
+- `403` — reserved for future use (e.g. org-level suspensions)
 - `410` — version is explicitly revoked (not used in v1 but reserved)
 - `422` — request body fails `input_schema` validation; response includes `{error, details: [{field, message}]}`
 - `500` — runner error not caught by graph; response omits stack trace, includes `request_id`
@@ -236,13 +238,14 @@ GET  /v1/runs/{run_id}/stream             re-attach to an in-flight stream
 
 Runs on every `/v1/*` request:
 
-1. Parse `Authorization: Bearer <token>`
+1. Parse `Authorization: Bearer <token>`; 401 if missing or malformed
 2. Hash `<token>` with the configured algorithm
-3. Look up `api_keys` by `key_hash`
-4. Reject if `revoked_at IS NOT NULL`
-5. Resolve the target graph from `{org}/{slug}`; reject with 403 if the graph id is not in `scopes` and `scopes != "*"`
-6. Touch `last_used_at`
-7. Attach the key metadata to the request context so the runner can tag the `runs` row
+3. Look up `api_keys` by `key_hash`; 401 if not found
+4. 401 if `revoked_at IS NOT NULL`
+5. Resolve the target graph from `{org}/{slug}`
+6. 404 if the graph doesn't exist OR if `scopes` is a list and doesn't include the graph id (return identical 404 in both cases so callers can't enumerate what they can't access)
+7. Touch `last_used_at`
+8. Attach the key metadata and resolved graph to the request context so the runner can tag the `runs` row
 
 ### 6.3 Management endpoints
 
@@ -266,8 +269,12 @@ DELETE /api/v1/graphs/{id}/examples/{exid}   remove an example
 ```
 GET    /api/v1/graphs/{id}/runs              list runs (filterable: status, date range, api_key_id, version)
 GET    /api/v1/runs/{run_id}                 full run detail (includes run_steps)
-POST   /api/v1/runs/{run_id}/cancel          cancel a queued or running async run
+POST   /api/v1/runs/{run_id}/cancel          cancel a queued or running async run — 409 if trigger_source is editor_test / api_sync / api_stream
 ```
+
+Runs list uses cursor pagination (`?cursor=<opaque>&limit=<n>`) from day one.
+
+The public `GET /v1/runs/{run_id}` and `GET /v1/runs/{run_id}/stream` endpoints (for async polling and stream re-attach) run through the same `/v1/*` auth middleware and additionally require that the caller's `api_key_id` matches the run's `api_key_id`. A different key in the same org cannot poll someone else's run.
 
 **API keys:**
 ```
@@ -342,7 +349,7 @@ Shell:
 
 - **Version dropdown** in the header controls "what am I looking at" across the API Docs, Runs list filter, and Test form. Defaults to `latest`.
 - **Edit** opens `GraphEditor` at the draft.
-- **Publish vN** is enabled only when the draft differs from `latest`. Clicking opens a confirm modal that asks for release notes, runs pre-publish validation (schemas valid, no dangling refs, draft has ≥1 node), then creates the new `graph_version` row.
+- **Publish vN** is enabled when the draft has ≥1 node AND (no published version exists yet OR the draft differs from `latest`). Button label shows the next version number (`Publish v1` on first publish, `Publish v4` when latest is v3). Clicking opens a confirm modal that asks for release notes, runs pre-publish validation (schemas valid, no dangling refs, draft has ≥1 node), then creates the new `graph_version` row.
 
 ### 8.3 Tab content
 
@@ -398,9 +405,9 @@ Form-first harness:
 New component `frontend/src/components/shared/JsonSchemaEditor.tsx` used in two places:
 
 1. **`GraphEditor` toolbar button** — "Schemas" opens a right-side drawer with two inner tabs (Input / Output). Each tab has:
-   - **Visual mode**: row-per-field editor. Columns: name, type dropdown, required checkbox, description. "Add field" button. Handles object, string, number, boolean, enum, array-of-primitives. Nested objects via expand.
-   - **JSON mode**: raw JSON Schema textarea. Visual and JSON modes stay in sync when JSON is valid.
-   - **"Generate from last run"** button: pulls the most recent successful `runs` row's input (or output), derives a schema from the observed shape, and fills the editor. User can then edit.
+   - **Visual mode**: row-per-field editor. Columns: name, type dropdown, required checkbox, description. "Add field" button. Handles: object, string, number, integer, boolean, string enum, array of primitives. **Supports one level of nested object** — deeper nesting requires dropping to JSON mode.
+   - **JSON mode**: raw JSON Schema textarea. Visual and JSON modes stay in sync when JSON is valid. If the raw JSON uses features the visual mode can't represent (deeper nesting, `oneOf`, `$ref`), visual mode is disabled with an explanatory badge: "This schema uses advanced features — edit as JSON."
+   - **"Generate from last run"** button: pulls the most recent successful `runs` row's input (or output), derives a schema from the observed shape (types, required fields), and fills the editor. User can then edit.
 
 2. **Read-only mode** — same component with `readOnly` prop. Used by the API Docs and Test tabs to render field tables.
 
@@ -425,7 +432,7 @@ New component `frontend/src/components/shared/JsonSchemaEditor.tsx` used in two 
 - **Async run orphaned by process restart** — on backend startup, the job worker scans for `runs` stuck in `running` for >10 minutes and marks them `failed` with `error_message = "worker restarted mid-run"`.
 - **Webhook URL unreachable** — all 5 delivery attempts logged to `webhook_deliveries`. Runs tab row shows a small ⚠ webhook badge.
 - **Deleting a graph with published versions** — confirm modal warns. Cascade deletes versions, runs, run_steps, webhook_deliveries. API keys scoped to the graph are not auto-revoked; they remain valid for other scopes and simply stop matching that graph path.
-- **Deleting an agent/MCP server while referenced in a published version** — the existing usages warning is extended to also scan `graph_versions.definition_json`, not just `graphs.definition_json`. Otherwise published versions quietly break.
+- **Deleting an agent/MCP server while referenced in a published version** — the existing `/agents/{id}/usages` and `/mcp-servers/{id}/usages` endpoints are extended to also scan `graph_versions.definition_json`, not just `graphs.definition_json`. Without this, published versions quietly break when a user deletes a referenced entity, because the scan only sees drafts. Each usage entry should indicate whether it points at a draft (current) or a pinned version (`v2` etc.) so the UI can show `acme/change-risk-analyzer@v2` in the warning list.
 - **Retention cleanup** — a daily background job deletes `runs` older than `graph.retention_days`, cascading to `run_steps` and `webhook_deliveries`.
 - **Pinned version + schema drift** — if someone pins `@v1` but v1 had no `input_schema`, requests bypass validation (no schema to enforce). Document this as expected behavior.
 - **Slug collisions** — enforced at the DB level via `UNIQUE (org_id, slug)`. UI validates before submit and shows a clean "slug taken" error.
