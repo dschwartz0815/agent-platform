@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import DEV_ORG_ID, DEV_USER_ID
 from app.db import get_db
 from app.engine.mcp_client import list_tools
+from app.models.graph import Graph
 from app.models.mcp_server import MCPServer
 from app.schemas.mcp_server import MCPServerCreate, MCPServerOut, MCPServerUpdate
 
@@ -111,6 +112,35 @@ async def refresh_server_tools(server_id: uuid.UUID, db: AsyncSession = Depends(
     await db.flush()
     await db.refresh(server)
     return {"tools": server.tools_json}
+
+
+@router.get("/{server_id}/usages")
+async def get_mcp_server_usages(server_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    """
+    Return a list of graphs that reference this MCP server by UUID in their node config.
+    Checks both config.mcp_server_id (scalar — used by mcp_tool nodes) and
+    config.mcp_server_ids (list — used by ReAct agent nodes).
+    """
+    result = await db.execute(select(Graph))
+    target = str(server_id)
+    usages: list[dict] = []
+    for g in result.scalars().all():
+        for node in (g.definition_json or {}).get("nodes", []):
+            cfg = node.get("config") or {}
+            matched = False
+            if cfg.get("mcp_server_id") == target:
+                matched = True
+            else:
+                ids = cfg.get("mcp_server_ids") or []
+                if isinstance(ids, list) and target in ids:
+                    matched = True
+            if matched:
+                usages.append({
+                    "graph_id": str(g.id),
+                    "graph_name": g.name,
+                    "node_key": node.get("key"),
+                })
+    return usages
 
 
 @router.delete("/{server_id}", status_code=204)

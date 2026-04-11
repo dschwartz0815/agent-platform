@@ -9,6 +9,7 @@ from app.a2a.card import try_fetch_agent_card
 from app.config import DEV_ORG_ID, DEV_USER_ID
 from app.db import get_db
 from app.models.agent import Agent
+from app.models.graph import Graph
 from app.schemas.agent import AgentCreate, AgentOut, AgentUpdate
 
 log = logging.getLogger(__name__)
@@ -95,6 +96,28 @@ async def refresh_agent_card(agent_id: uuid.UUID, db: AsyncSession = Depends(get
     await db.flush()
     await db.refresh(agent)
     return agent
+
+
+@router.get("/{agent_id}/usages")
+async def get_agent_usages(agent_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    """
+    Return a list of graphs that reference this agent by UUID in their node config.
+    Scans Graph.definition_json — the denormalized snapshot the runner uses.
+    Used by the UI to warn before deletion.
+    """
+    result = await db.execute(select(Graph))
+    target = str(agent_id)
+    usages: list[dict] = []
+    for g in result.scalars().all():
+        for node in (g.definition_json or {}).get("nodes", []):
+            cfg = node.get("config") or {}
+            if cfg.get("agent_id") == target:
+                usages.append({
+                    "graph_id": str(g.id),
+                    "graph_name": g.name,
+                    "node_key": node.get("key"),
+                })
+    return usages
 
 
 @router.delete("/{agent_id}", status_code=204)

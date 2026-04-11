@@ -56,14 +56,25 @@ class AgentCard(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+_CARD_SUFFIX = "/.well-known/agent.json"
+
+
 def card_url_from_base(base_url: str) -> str:
-    """Return the canonical agent card URL for a given agent base URL."""
-    return base_url.rstrip("/") + "/.well-known/agent.json"
+    """
+    Return the canonical agent card URL for a given input URL.
+    Accepts either a base URL (adds the suffix) or a URL that already
+    ends with /.well-known/agent.json (returns it unchanged).
+    """
+    cleaned = base_url.rstrip("/")
+    if cleaned.endswith(_CARD_SUFFIX):
+        return cleaned
+    return cleaned + _CARD_SUFFIX
 
 
 async def fetch_agent_card(base_url: str, timeout: float = 10.0) -> AgentCard:
     """
     Fetch and validate the agent card from /.well-known/agent.json.
+    Accepts either a base URL or a full card URL.
 
     Raises:
         httpx.HTTPError: if the request fails

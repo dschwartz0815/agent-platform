@@ -1,6 +1,7 @@
 .venv
 .env
 .claude
+.superpowers
 /data/*
 
 **/node_modules/**

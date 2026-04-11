@@ -84,3 +84,51 @@ export interface RunEvent {
   node: string | null;
   data: unknown;
 }
+
+// ---------------------------------------------------------------------------
+// Registry create/update wire types — mirror backend Pydantic schemas
+// ---------------------------------------------------------------------------
+
+export interface AgentCreate {
+  name: string;
+  description?: string | null;
+  agent_type: "llm" | "http";
+  model?: string | null;
+  system_prompt?: string | null;
+  url?: string | null;
+  agent_card_url?: string | null;
+}
+
+export interface AgentUpdate {
+  name?: string;
+  description?: string | null;
+  model?: string | null;
+  system_prompt?: string | null;
+  url?: string | null;
+  agent_card_url?: string | null;
+}
+
+export interface MCPServerCreate {
+  name: string;
+  description?: string | null;
+  transport: "http" | "stdio";
+  url?: string | null;
+  command?: string | null;
+  args?: string[] | null;
+  env_vars?: Record<string, string> | null;
+}
+
+export interface MCPServerUpdate {
+  name?: string;
+  description?: string | null;
+  url?: string | null;
+  command?: string | null;
+  args?: string[] | null;
+  env_vars?: Record<string, string> | null;
+}
+
+export interface Usage {
+  graph_id: string;
+  graph_name: string;
+  node_key: string;
+}

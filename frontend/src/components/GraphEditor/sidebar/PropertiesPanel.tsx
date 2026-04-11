@@ -2,14 +2,8 @@ import { useQuery } from "@tanstack/react-query";
 import type { Node } from "@xyflow/react";
 import { useMemo } from "react";
 import { listAgents, listMCPServers } from "../../../api/client";
-import type { Agent, MCPServer, MCPTool } from "../../../types";
-
-const ANTHROPIC_MODELS = [
-  { id: "claude-opus-4-6",          label: "Claude Opus 4.6 (most capable)" },
-  { id: "claude-sonnet-4-6",        label: "Claude Sonnet 4.6 (balanced)" },
-  { id: "claude-haiku-4-5-20251001",label: "Claude Haiku 4.5 (fast)" },
-  { id: "claude-3-5-sonnet-20241022",label: "claude-3-5-sonnet (legacy)" },
-];
+import { ANTHROPIC_MODELS, DEFAULT_MODEL_ID } from "../../../constants/models";
+import type { MCPServer, MCPTool } from "../../../types";
 
 interface Props {
   node: Node | null;
@@ -69,7 +63,7 @@ export function PropertiesPanel({ node, onUpdate }: Props) {
           <Field label="Model">
             <select
               style={styles.select}
-              value={String(data.config_json.model ?? "claude-sonnet-4-6")}
+              value={String(data.config_json.model ?? DEFAULT_MODEL_ID)}
               onChange={(e) => set("model", e.target.value)}
             >
               {ANTHROPIC_MODELS.map((m) => (
@@ -154,7 +148,7 @@ export function PropertiesPanel({ node, onUpdate }: Props) {
           <Field label="Model">
             <select
               style={styles.select}
-              value={String(data.config_json.model ?? "claude-sonnet-4-6")}
+              value={String(data.config_json.model ?? DEFAULT_MODEL_ID)}
               onChange={(e) => set("model", e.target.value)}
             >
               {ANTHROPIC_MODELS.map((m) => (

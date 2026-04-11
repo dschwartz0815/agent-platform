@@ -1,5 +1,16 @@
 import axios from "axios";
-import type { Agent, Graph, GraphSummary, MCPServer } from "../types";
+import type {
+  Agent,
+  AgentCreate,
+  AgentUpdate,
+  Graph,
+  GraphSummary,
+  MCPServer,
+  MCPServerCreate,
+  MCPServerUpdate,
+  MCPTool,
+  Usage,
+} from "../types";
 
 const api = axios.create({
   baseURL: "/api/v1",
@@ -39,14 +50,44 @@ export const createGraph = (payload: {
 export const listAgents = (): Promise<Agent[]> =>
   api.get("/agents/").then((r) => r.data);
 
+export const createAgent = (body: AgentCreate): Promise<Agent> =>
+  api.post("/agents/", body).then((r) => r.data);
+
+export const updateAgent = (id: string, body: AgentUpdate): Promise<Agent> =>
+  api.patch(`/agents/${id}`, body).then((r) => r.data);
+
+export const deleteAgent = (id: string): Promise<void> =>
+  api.delete(`/agents/${id}`).then(() => undefined);
+
+export const refreshAgentCard = (id: string): Promise<Agent> =>
+  api.post(`/agents/${id}/refresh-card`).then((r) => r.data);
+
+export const getAgentUsages = (id: string): Promise<Usage[]> =>
+  api.get(`/agents/${id}/usages`).then((r) => r.data);
+
 // MCP Servers
 export const listMCPServers = (): Promise<MCPServer[]> =>
   api.get("/mcp-servers/").then((r) => r.data);
 
+export const createMCPServer = (body: MCPServerCreate): Promise<MCPServer> =>
+  api.post("/mcp-servers/", body).then((r) => r.data);
+
+export const updateMCPServer = (id: string, body: MCPServerUpdate): Promise<MCPServer> =>
+  api.patch(`/mcp-servers/${id}`, body).then((r) => r.data);
+
+export const deleteMCPServer = (id: string): Promise<void> =>
+  api.delete(`/mcp-servers/${id}`).then(() => undefined);
+
+export const refreshMCPServerTools = (id: string): Promise<{ tools: MCPTool[] }> =>
+  api.post(`/mcp-servers/${id}/refresh-tools`).then((r) => r.data);
+
 export const getMCPServerTools = (
   id: string
-): Promise<{ tools: { name: string; description: string }[] }> =>
+): Promise<{ tools: MCPTool[] }> =>
   api.get(`/mcp-servers/${id}/tools`).then((r) => r.data);
+
+export const getMCPServerUsages = (id: string): Promise<Usage[]> =>
+  api.get(`/mcp-servers/${id}/usages`).then((r) => r.data);
 
 /**
  * Stream a graph run. Returns an AbortController so the caller can cancel.
