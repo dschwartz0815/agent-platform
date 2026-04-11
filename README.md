@@ -1,6 +1,26 @@
 # Agent Platform
 
-Platform for onboarding, managing, building, customizing, and deploying chat and agentic solutions across teams.
+A visual platform for building, versioning, testing, and publishing LangGraph-based agent workflows as public HTTP APIs. Teams build graphs in a React Flow canvas, wire them to external MCP servers and A2A agents, run them interactively, pin versions, observe every execution, and expose them as authenticated REST/SSE endpoints that any service can call.
+
+Think: **GitHub Actions for AI agents** — you design the workflow visually, publish a version, and consumers call it via HTTP with a bearer token.
+
+## What you can do with it
+
+- **Build graph workflows visually** — drag nodes (LLM, router, MCP tool, A2A agent, ReAct agent) onto a canvas, wire edges, set structured JSON Schema for inputs/outputs.
+- **Register external tools** — point the platform at A2A agents (HTTP, discovered via `/.well-known/agent.json`) and MCP servers (HTTP/SSE or stdio subprocess).
+- **Test interactively** — form-first test harness generates an input form from your schema, streams execution events live, and saves runs for later inspection.
+- **Version and publish** — `draft` / `v1` / `v2` / ... immutable snapshots. Consumers can pin or ride `latest`.
+- **Observe every run** — per-node waterfall, token usage (Anthropic input/output/cache tokens), input/output JSON, error traces. 30-day retention.
+- **Call as a public API** — `POST /v1/run/{org}/{graph-slug}` with an `ap_live_...` bearer token. Sync JSON, SSE streaming, or (Plan D) async webhook delivery.
+- **Manage access** — per-org API keys scoped to specific graphs (or wildcard). Hashed at rest, shown once at creation, revokable.
+
+## Tech stack
+
+**Backend** — Python 3.12, FastAPI, SQLAlchemy 2.0 (async), Alembic, Pydantic v2, LangGraph, Anthropic SDK (direct), MCP Python SDK, bcrypt, jsonschema, pytest + pytest-asyncio + aiosqlite.
+
+**Frontend** — React 19, TypeScript, Vite, @xyflow/react (React Flow), TanStack React Query, axios.
+
+**Infrastructure** — Docker Compose orchestrating Postgres 16 + backend + frontend + a mock seed A2A agent (separate container).
 
 ## Quickstart
 
@@ -9,83 +29,180 @@ cp .env.example .env    # fill in ANTHROPIC_API_KEY (and optionally POSTGRES_PAS
 docker compose up --build
 ```
 
-- Frontend: http://localhost:5173  
-- Backend API + docs: http://localhost:8000/docs  
-- Postgres: localhost:5432 (user: `agent`, db: `agent_platform`, password from `.env`)
+- **Frontend UI:** http://localhost:5173
+- **Backend API + OpenAPI docs:** http://localhost:8000/docs
+- **Postgres:** `localhost:5432` (user `agent`, db `agent_platform`, password from `.env`)
+- **Seeded demo graph:** `Change Request Risk Analyzer` — a 5-node workflow that classifies a change request, fetches service dependencies (via MCP), optionally calls an A2A risk-assessor agent for high-risk changes, and produces a markdown risk report.
+- **Seeded demo API key:** `ap_live_demoseedkey0000000000000000000000` (local dev only; `*` scope; safe to use in curl examples).
 
-The first `up` takes longer — Postgres initialises, Alembic runs the migration, then seed data is inserted. After that, `up` is fast (Alembic is idempotent, seed skips existing rows).
+### Curl the demo
 
-## Dev loop
-
-Source is volume-mounted into both containers. Changes hot-reload without rebuilding:
-
-- **Backend**: uvicorn `--reload` watches `/app` — save a `.py` file, it restarts in ~1s.
-- **Frontend**: Vite HMR — save a `.tsx` file, it updates in the browser instantly.
-
-To exec into a running container:
 ```bash
-docker compose exec backend bash
-docker compose exec frontend sh
+# Sync call against the seeded graph
+curl -X POST "http://localhost:8000/v1/run/demo/change-risk-analyzer" \
+  -H "Authorization: Bearer ap_live_demoseedkey0000000000000000000000" \
+  -H "Content-Type: application/json" \
+  -d '{"input":{
+    "title":"Migrate payments DB to Postgres 16",
+    "description":"Zero-downtime blue/green migration",
+    "affected_services":["payments-service"],
+    "proposed_window":"Sat 02:00 UTC"
+  }}'
 ```
 
-To run a one-off command (e.g. generate a new migration after a schema change):
+### Dev loop
+
+Source is volume-mounted into both backend and frontend containers. Changes hot-reload without rebuilding:
+
+- **Backend** — uvicorn `--reload` watches `/app`; `.py` changes restart in ~1s. Alembic runs on every startup (idempotent) so schema changes from pulled migrations just work.
+- **Frontend** — Vite HMR; `.tsx` changes update in the browser instantly.
+
+Common one-off commands:
+
 ```bash
+# Run the backend test suite (80 tests, ~10s)
+docker compose exec backend pytest -v
+
+# Type-check the frontend
+docker compose exec frontend npx tsc --noEmit
+
+# Create a new migration after editing a model
 docker compose exec backend alembic revision --autogenerate -m "add_something"
 docker compose exec backend alembic upgrade head
+
+# Exec into containers
+docker compose exec backend bash
+docker compose exec frontend sh
+
+# Inspect the Postgres state directly
+docker compose exec postgres psql -U agent -d agent_platform
 ```
 
-## Architecture
+## Architecture at a glance
 
 ```
 backend/
   app/
-    models/       SQLAlchemy ORM (user, org, agent, mcp_server, graph + nodes/edges)
-    schemas/      Pydantic request/response models
-    routers/      FastAPI endpoints (graphs, agents, mcp_servers, execution)
+    main.py              FastAPI app, lifespan (runs migrations + seed), CORS, error handlers
+    config.py            Pydantic BaseSettings (DATABASE_URL, ANTHROPIC_API_KEY, CORS_ORIGINS, ...)
+    db.py                Async SQLAlchemy engine + Base + get_db dependency
+    logging_config.py    Structured JSON logging with request_id
+    models/              ORM: user, org, agent, mcp_server, graph, graph_version,
+                              run, run_step, api_key
+    schemas/             Pydantic models used in routers
+    routers/             FastAPI routers
+      graphs.py            /api/v1/graphs — CRUD + publish + versions + PATCH
+      execution.py         /api/v1/graphs/{id}/run — editor test runs (SSE)
+      runs.py              /api/v1/graphs/{id}/runs, /api/v1/runs/{id}, examples
+      agents.py            /api/v1/agents — A2A agent registration
+      mcp_servers.py       /api/v1/mcp-servers — MCP server registration
+      api_keys.py          /api/v1/api-keys — key management
+      public_runs.py       /v1/run/{org}/{slug} — authenticated public endpoint
     engine/
-      runner.py       LangGraph StateGraph builder + astream_events streamer
-      mcp_client.py   MCP client — HTTP/SSE and stdio transports via mcp SDK
-  seed_mcp_server/    Bundled demo stdio MCP server (change risk analyzer)
-  alembic/            Database migrations
+      runner.py            LangGraph StateGraph builder, node implementations,
+                           astream_events consumer + token usage extraction
+      persistence.py       run_graph() — wraps stream_graph with runs/run_steps
+                           persistence and run_started event
+      mcp_client.py        MCP client (HTTP/SSE + stdio) via mcp Python SDK
+    a2a/
+      card.py              A2A agent card fetch + JSON-RPC message/send client
+    security/
+      auth.py              authenticate_api_key dep + check_graph_scope
+    services/
+      publishing.py        publish pre-flight validation (empty, dangling refs)
+      api_keys.py          generate_plaintext_key, hash_key, verify_key
+      schema_validation.py validate_against_schema (jsonschema wrapper)
+    seed.py                Idempotent dev seed: org, user, MCP server, A2A agent,
+                           5-node demo graph, auto-publish v1, demo API key
+
+  seed_services/           Standalone services in docker-compose:
+    mock_a2a_agent.py      FastAPI app on port 8001 — serves /.well-known/agent.json
+                           and JSON-RPC message/send for the demo A2A agent
+    mock_mcp_server.py     Stdio MCP server with lookup_dependencies tool
+  alembic/                 Database migrations (4 total through Plan C)
+  tests/                   pytest suite (80 tests through Plan C)
 
 frontend/
   src/
-    api/            Typed API client + SSE stream helper
+    api/client.ts          Axios client with ~30 typed functions + SSE streamRun helper
+    types/index.ts         Shared TypeScript interfaces for every resource
+    constants/models.ts    Anthropic model list (shared by multiple UIs)
+    App.tsx                Top-level router: header tabs (Graphs / Agents / MCP Servers /
+                           API Keys), detail/editor state machine
     components/
-      GraphList/    Browse, create, clone, delete graphs
-      GraphEditor/  React Flow canvas + node palette + properties panel + edge editor
-      RunPanel/     JSON input + real-time SSE token stream
-    types/          Shared TypeScript interfaces
+      GraphList/             Browse and create graphs
+      GraphDetail/           "Product page" for a graph — 6 tabs:
+        index.tsx              Shell + header + tab bar + publish modal
+        OverviewTab.tsx        Summary, stats, node list
+        APIDocsTab.tsx         Stripe-style auto-generated reference
+        VersionsTab.tsx        Published version history
+        KeysTab.tsx            Filtered API keys with access to this graph
+        RunsTab.tsx            Paginated run list
+        RunDetailDrawer.tsx    Right-side waterfall detail
+        TestTab.tsx            Form-first test harness with live streaming
+        PublishModal.tsx       Publish confirmation with release notes
+        SchemasDrawer.tsx      Input/output schema editor (in GraphEditor toolbar)
+      GraphEditor/           React Flow canvas, node palette, properties panel
+      AgentList/             Agents registry (list, create, details drawer, delete)
+      MCPServerList/         MCP servers registry
+      ApiKeyList/            API key management with show-once plaintext reveal
+      shared/                Modal, Drawer, UsageWarning, JsonSchemaEditor,
+                             SchemaFormGenerator
 ```
 
-## Database
+## How things are laid out by concept
 
-**Default: Postgres** (via docker-compose).
+| Concept | What it is | Where it lives |
+|---|---|---|
+| **Graph** | A directed workflow of nodes (LLM / router / mcp_tool / a2a / agent) | `models/graph.py` → `Graph`, `GraphNode`, `GraphEdge` |
+| **Graph version** | Immutable snapshot of a graph's `definition_json` + schemas at publish time | `models/graph.py` → `GraphVersion` |
+| **Run** | One execution of a graph (editor test, sync API, streaming API, or async) | `models/run.py` → `Run` |
+| **Run step** | Per-node trace row — timing, input/output snapshot, token usage | `models/run.py` → `RunStep` |
+| **Agent** | External reference to an A2A HTTP agent or a direct LLM agent | `models/agent.py` → `Agent` |
+| **MCP server** | External reference to an HTTP/SSE or stdio MCP server | `models/mcp_server.py` → `MCPServer` |
+| **API key** | Per-org bearer token, scoped to specific graphs or wildcard, hashed at rest | `models/api_key.py` → `ApiKey` |
+| **Org + user** | Single-tenant placeholders; `created_by` and `org_id` on every row for future multi-tenancy | `models/user.py` |
 
-The platform runs on Postgres in all environments — local dev included, via docker-compose. SQLite is supported by the ORM layer and still works for local scripting/testing, but is not the intended runtime.
+## The four delivered plans
 
-### Switching to an external Postgres
+Implementation was split into four sequential plans. Plans A, B, and C are merged to `main`; Plan D is the final phase.
 
-1. Set `DATABASE_URL` in `.env`:
-   ```
-   DATABASE_URL=postgresql+asyncpg://user:pass@your-host:5432/agent_platform
-   ```
-2. Run migrations:
-   ```bash
-   docker compose exec backend alembic upgrade head
-   ```
+- **Plan A — Versioning foundation + Graph detail page** (merged). `graph_versions` table, publish workflow, input/output schemas, GraphDetail page replacing the old click-to-editor flow, shared JSON Schema editor.
+- **Plan B — Runs persistence + API Docs / Test / Runs tabs** (merged). `runs` + `run_steps` tables, `run_graph()` persistence wrapper, token usage extraction, three new tabs on GraphDetail.
+- **Plan C — API Keys + public endpoints** (merged). `api_keys` table with bcrypt, `authenticate_api_key` dependency, `POST /v1/run/{org}/{slug}` sync + stream modes, `@vN` version pinning, API Keys top-level page, show-once plaintext reveal.
+- **Plan D — Async jobs + Webhooks** (planned). `?mode=async`, worker pool, HMAC-signed webhook delivery, retry ladder, cancel endpoint, webhook deliveries section in the run detail drawer.
 
-### Schema design notes
+The full **spec** is at `docs/superpowers/specs/2026-04-11-graph-as-api-design.md` — 500+ lines covering every architectural decision, data model field, endpoint contract, and non-goal.
 
-- All tables carry `created_by` (user_id) and `org_id` — present from day 1 so real auth is a drop-in when added (no migration needed).
-- `graphs.definition_json` is a denormalized snapshot of nodes+edges used by the execution engine. `graph_nodes`/`graph_edges` rows are the normalized source of truth for the editor. Both are kept in sync on every save.
-- `mcp_servers` and `agents` are **external references** — the platform invokes them but does not host them. Both stdio (subprocess) and HTTP/SSE MCP transports are supported.
+## Documentation
+
+- **`README.md`** (this file) — quick start + orientation
+- **`docs/INTEGRATION.md`** — deep guide for another engineer (human or Claude instance) picking up the project or integrating into their own platform. Covers architecture, data model, API contracts, extension points, and customization patterns.
+- **`docs/superpowers/specs/`** — architectural specs (one per feature)
+- **`docs/superpowers/plans/`** — task-by-task implementation plans (one per phase)
 
 ## Key design decisions
 
-- **Alembic migrations** — run automatically on startup (idempotent). Generate new migrations via `alembic revision --autogenerate`.
-- **Structured logging** — JSON lines with `request_id` threaded through every log record.
-- **Error responses** — consistent `{"error": ..., "request_id": ...}` schema; no stack traces.
-- **CORS** — explicitly scoped to `cors_origins` setting, never wildcard. Configurable via `CORS_ORIGINS` env var (comma-separated).
-- **Stubbed auth** — `DEV_USER_ID`/`DEV_ORG_ID` are hardcoded constants. Replace with request context when real auth lands.
-- **LangGraph streaming** — `.astream_events()` feeds SSE chunks directly to the browser's `RunPanel`.
+- **Alembic migrations auto-run on startup** — idempotent, safe, no migration step in deploy workflow.
+- **Structured JSON logging** — every log record includes `request_id` via `contextvars`; trace a single request through the whole stack by grep.
+- **Consistent error schema** — `{"error": "...", "request_id": "..."}`; no stack traces leak to clients.
+- **CORS configurable via env** — `CORS_ORIGINS=http://localhost:5173,https://prod.example.com` — never wildcard.
+- **Seed is idempotent by identity** — rerunning `seed()` on a warm DB is a no-op, NOT "skip if graphs exist". Re-applies desired state to the seeded entities (well-known UUIDs) and leaves user-created rows alone.
+- **API keys: prefix-lookup + bcrypt verify** — the first 16 chars are stored as an indexed `key_prefix`; the full key is bcrypt-hashed. Auth path: lookup by prefix, verify by hash. GitHub / Stripe pattern.
+- **404 for scope mismatch, not 403** — the public `/v1/run/*` endpoints return 404 when the API key lacks access, identical to "graph not found". Avoids enumeration oracles.
+- **LangGraph `astream_events(version="v2")`** feeds SSE chunks to the browser; `run_graph()` wraps the stream with DB persistence.
+- **Token usage plumbed via `AgentState.last_usage`** — LLM nodes attach `response.usage` to their state update; `run_graph` reads it from each `node_end` event and writes to `run_steps.token_usage` + aggregates to `runs.token_usage`.
+
+## Development workflow
+
+This project was built with specs-and-plans. If you're extending it:
+
+1. **Spec a feature first** (if it's non-trivial): put it in `docs/superpowers/specs/YYYY-MM-DD-<feature>-design.md`. Cover data model, API, UX, non-goals, risks.
+2. **Write a plan**: `docs/superpowers/plans/YYYY-MM-DD-<feature>.md` with task-by-task TDD steps.
+3. **TDD for backend changes**: failing test → implement → passing test → commit. See any existing `backend/tests/test_*.py` for the pattern.
+4. **Manual browser verification for frontend changes** — no automated UI tests in this repo.
+5. **Type-check the frontend** after every frontend change: `docker compose exec frontend npx tsc --noEmit`.
+
+## Contributing
+
+See `docs/INTEGRATION.md` for the deep guide. Start by reading the design spec, then pick a task from a plan, then follow the TDD loop the existing tests already demonstrate.
