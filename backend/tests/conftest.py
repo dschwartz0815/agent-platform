@@ -33,7 +33,7 @@ if "app.db" in sys.modules:
 from app.config import settings  # noqa: E402
 from app.db import Base, get_db  # noqa: E402
 # Import all models so they register with Base.metadata
-from app.models import agent, graph, mcp_server, user  # noqa: E402, F401
+from app.models import agent, graph, mcp_server, run, user  # noqa: E402, F401
 
 
 @pytest_asyncio.fixture(scope="session", loop_scope="session")
