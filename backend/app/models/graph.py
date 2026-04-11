@@ -28,6 +28,15 @@ class Graph(Base):
         Uuid, ForeignKey("graphs.id"), nullable=True
     )
 
+    slug: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    input_schema: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    output_schema: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    latest_published_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("graph_versions.id", ondelete="SET NULL"), nullable=True
+    )
+    retention_days: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
+    test_examples: Mapped[list | None] = mapped_column(JSON, nullable=True)
+
     # Ownership
     created_by: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id"), nullable=False)
     org_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("orgs.id"), nullable=False)
@@ -49,6 +58,13 @@ class Graph(Base):
     )
     edges: Mapped[list["GraphEdge"]] = relationship(
         back_populates="graph", cascade="all, delete-orphan"
+    )
+    versions: Mapped[list["GraphVersion"]] = relationship(
+        "GraphVersion",
+        back_populates="graph",
+        cascade="all, delete-orphan",
+        foreign_keys="GraphVersion.graph_id",
+        order_by="GraphVersion.version.desc()",
     )
 
 
@@ -100,3 +116,35 @@ class GraphEdge(Base):
     condition: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
     graph: Mapped["Graph"] = relationship(back_populates="edges")
+
+
+class GraphVersion(Base):
+    """
+    Immutable snapshot of a graph at publish time. The runner executes
+    a specific GraphVersion row, never the live draft (except for editor
+    test runs that explicitly target the draft).
+
+    `version` is 1-indexed and unique within a graph.
+    """
+
+    __tablename__ = "graph_versions"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    graph_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("graphs.id", ondelete="CASCADE"), nullable=False
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    definition_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    input_schema: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    output_schema: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    published_by: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id"), nullable=False)
+    published_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    graph: Mapped["Graph"] = relationship(
+        "Graph",
+        back_populates="versions",
+        foreign_keys=[graph_id],
+    )
