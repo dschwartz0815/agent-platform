@@ -8,6 +8,7 @@ import { PublishModal } from "./PublishModal";
 import { APIDocsTab } from "./APIDocsTab";
 import { RunsTab } from "./RunsTab";
 import { TestTab } from "./TestTab";
+import { KeysTab } from "./KeysTab";
 
 type Tab = "overview" | "api-docs" | "versions" | "keys" | "runs" | "test";
 
@@ -21,7 +22,7 @@ const TABS: { id: Tab; label: string; disabled?: boolean }[] = [
   { id: "overview", label: "Overview" },
   { id: "api-docs", label: "API Docs" },
   { id: "versions", label: "Versions" },
-  { id: "keys", label: "Keys", disabled: true },
+  { id: "keys", label: "Keys" },
   { id: "runs", label: "Runs" },
   { id: "test", label: "Test" },
 ];
@@ -95,6 +96,7 @@ export function GraphDetail({ graphId, onBack, onEdit }: Props) {
         {activeTab === "overview" && <OverviewTab graph={graph} />}
         {activeTab === "api-docs" && <APIDocsTab graph={graph} />}
         {activeTab === "versions" && <VersionsTab graphId={graph.id} />}
+        {activeTab === "keys" && <KeysTab graphId={graph.id} />}
         {activeTab === "runs" && <RunsTab graphId={graph.id} />}
         {activeTab === "test" && <TestTab graph={graph} />}
       </div>

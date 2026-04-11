@@ -5,12 +5,13 @@ import { GraphEditor } from "./components/GraphEditor";
 import { GraphDetail } from "./components/GraphDetail";
 import { AgentList } from "./components/AgentList";
 import { MCPServerList } from "./components/MCPServerList";
+import { ApiKeyList } from "./components/ApiKeyList";
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, staleTime: 10_000 } },
 });
 
-type View = "graphs" | "agents" | "mcp-servers";
+type View = "graphs" | "agents" | "mcp-servers" | "api-keys";
 
 export default function App() {
   const [view, setView] = useState<View>("graphs");
@@ -53,6 +54,7 @@ export default function App() {
             {view === "graphs" && <GraphList onOpen={openGraphDetail} />}
             {view === "agents" && <AgentList onOpenGraph={openGraphDetail} />}
             {view === "mcp-servers" && <MCPServerList onOpenGraph={openGraphDetail} />}
+            {view === "api-keys" && <ApiKeyList />}
           </>
         )}
       </div>
@@ -65,6 +67,7 @@ function Header({ view, onChange }: { view: View; onChange: (v: View) => void })
     { id: "graphs",      label: "Graphs" },
     { id: "agents",      label: "Agents" },
     { id: "mcp-servers", label: "MCP Servers" },
+    { id: "api-keys",    label: "API Keys" },
   ];
   return (
     <div style={styles.header}>
