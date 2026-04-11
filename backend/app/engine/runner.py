@@ -64,6 +64,7 @@ class AgentState(TypedDict):
     input: dict[str, Any]       # original payload passed to /run
     context: dict[str, Any]     # accumulated tool outputs
     current_route: str | None   # set by router nodes
+    last_usage: dict[str, Any] | None  # set by LLM/agent nodes; per-node
 
 
 # ---------------------------------------------------------------------------
@@ -126,8 +127,9 @@ def _build_llm_node(node_key: str, config: dict):
             params["tool_choice"] = {"type": "any"}
 
         response = await _anthropic.messages.create(**params)
+        last_usage = _extract_usage(response)
 
-        updates: dict[str, Any] = {}
+        updates: dict[str, Any] = {"last_usage": last_usage}
 
         if tool_defs and response.stop_reason == "tool_use":
             # Extract structured output from the first tool_use block
@@ -277,6 +279,13 @@ def _build_agent_node(node_key: str, config: dict, mcp_servers: dict[str, Any]):
 
         new_messages: list[BaseMessage] = []
 
+        agg_usage = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+        }
+
         for _ in range(max_iter):
             params: dict[str, Any] = {
                 "model": model,
@@ -289,6 +298,9 @@ def _build_agent_node(node_key: str, config: dict, mcp_servers: dict[str, Any]):
                 params["tools"] = tools
 
             response = await _anthropic.messages.create(**params)
+            iter_usage = _extract_usage(response)
+            for k in agg_usage:
+                agg_usage[k] += iter_usage.get(k, 0)
 
             if response.stop_reason == "end_turn":
                 text = next(
@@ -336,7 +348,7 @@ def _build_agent_node(node_key: str, config: dict, mcp_servers: dict[str, Any]):
             else:
                 break
 
-        return {"messages": new_messages}
+        return {"messages": new_messages, "last_usage": agg_usage}
 
     node.__name__ = node_key
     return node
@@ -501,6 +513,7 @@ async def stream_graph(
         "input": run_input,
         "context": {},
         "current_route": None,
+        "last_usage": None,
     }
 
     node_keys = {n["key"] for n in definition.get("nodes", [])}
@@ -527,6 +540,7 @@ async def stream_graph(
                         if texts:
                             safe_output["message_text"] = "\n\n".join(texts)
                     else:
+                        # Pass through: last_usage, context, current_route, etc.
                         safe_output[k] = v
                 yield {"event": "node_end", "node": name, "data": safe_output}
 
@@ -579,6 +593,24 @@ def _resolve_templates(template: dict, state: AgentState) -> dict:
         else:
             resolved[k] = v
     return resolved
+
+
+def _extract_usage(response) -> dict[str, Any]:
+    """Serialize Anthropic Usage object into a plain dict the DB can store."""
+    if not hasattr(response, "usage") or response.usage is None:
+        return {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+        }
+    u = response.usage
+    return {
+        "input_tokens": getattr(u, "input_tokens", 0) or 0,
+        "output_tokens": getattr(u, "output_tokens", 0) or 0,
+        "cache_read_input_tokens": getattr(u, "cache_read_input_tokens", 0) or 0,
+        "cache_creation_input_tokens": getattr(u, "cache_creation_input_tokens", 0) or 0,
+    }
 
 
 def _extract_json(text: str) -> Any | None:
