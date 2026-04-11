@@ -52,6 +52,11 @@ log = logging.getLogger(__name__)
 SEED_MCP_SERVER_ID = uuid.UUID("00000000-0000-0000-0000-000000000010")
 SEED_A2A_AGENT_ID  = uuid.UUID("00000000-0000-0000-0000-000000000011")
 SEED_GRAPH_ID      = uuid.UUID("00000000-0000-0000-0000-000000000020")
+SEED_API_KEY_ID    = uuid.UUID("00000000-0000-0000-0000-000000000030")
+# The plaintext for the seed key is deterministic so curl examples in docs
+# and the readme can reference it. This is ONLY safe because it's a local-dev
+# key seeded in DEBUG mode. Production deployments never run the seed.
+SEED_API_KEY_PLAINTEXT = "ap_live_demoseedkey0000000000000000000000"
 
 _HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SEED_MCP_SCRIPT = os.path.join(_HERE, "seed_services", "mock_mcp_server.py")
@@ -530,6 +535,29 @@ async def _ensure_seed_graph_published(db, stats: SeedStats) -> None:
     log.info("seeded_graph_v1_published")
 
 
+async def _upsert_api_key(db, stats: SeedStats) -> None:
+    from app.models.api_key import ApiKey
+    from app.services.api_keys import hash_key, split_prefix
+
+    key = await db.get(ApiKey, SEED_API_KEY_ID)
+    if not key:
+        db.add(ApiKey(
+            id=SEED_API_KEY_ID,
+            org_id=DEV_ORG_ID,
+            name="Demo dev key",
+            key_prefix=split_prefix(SEED_API_KEY_PLAINTEXT),
+            key_hash=hash_key(SEED_API_KEY_PLAINTEXT),
+            key_last4=SEED_API_KEY_PLAINTEXT[-4:],
+            scopes=["*"],
+            created_by=DEV_USER_ID,
+        ))
+        stats["inserted"] += 1
+        log.info("seeded_demo_api_key")
+    else:
+        # Don't re-hash or mutate the existing key — it's already correct
+        stats["unchanged"] += 1
+
+
 async def _replace_nodes_edges(
     db,
     graph_id: uuid.UUID,
@@ -594,6 +622,7 @@ async def seed() -> None:
 
         await _upsert_graph(db, stats)
         await _ensure_seed_graph_published(db, stats)
+        await _upsert_api_key(db, stats)
 
         await db.commit()
 
