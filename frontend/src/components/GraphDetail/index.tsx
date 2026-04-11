@@ -5,6 +5,9 @@ import type { Graph } from "../../types";
 import { OverviewTab } from "./OverviewTab";
 import { VersionsTab } from "./VersionsTab";
 import { PublishModal } from "./PublishModal";
+import { APIDocsTab } from "./APIDocsTab";
+import { RunsTab } from "./RunsTab";
+import { TestTab } from "./TestTab";
 
 type Tab = "overview" | "api-docs" | "versions" | "keys" | "runs" | "test";
 
@@ -16,11 +19,11 @@ interface Props {
 
 const TABS: { id: Tab; label: string; disabled?: boolean }[] = [
   { id: "overview", label: "Overview" },
-  { id: "api-docs", label: "API Docs", disabled: true },
+  { id: "api-docs", label: "API Docs" },
   { id: "versions", label: "Versions" },
   { id: "keys", label: "Keys", disabled: true },
-  { id: "runs", label: "Runs", disabled: true },
-  { id: "test", label: "Test", disabled: true },
+  { id: "runs", label: "Runs" },
+  { id: "test", label: "Test" },
 ];
 
 export function GraphDetail({ graphId, onBack, onEdit }: Props) {
@@ -90,7 +93,10 @@ export function GraphDetail({ graphId, onBack, onEdit }: Props) {
 
       <div style={styles.content}>
         {activeTab === "overview" && <OverviewTab graph={graph} />}
+        {activeTab === "api-docs" && <APIDocsTab graph={graph} />}
         {activeTab === "versions" && <VersionsTab graphId={graph.id} />}
+        {activeTab === "runs" && <RunsTab graphId={graph.id} />}
+        {activeTab === "test" && <TestTab graph={graph} />}
       </div>
 
       <PublishModal
