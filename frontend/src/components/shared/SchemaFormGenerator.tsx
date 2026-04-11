@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
 
 /**
@@ -160,19 +161,9 @@ function FieldRow({
         </select>
       )}
       {field.type === "array" && (
-        <input
-          style={styles.input}
-          type="text"
-          placeholder="comma-separated values"
-          value={Array.isArray(value) ? (value as string[]).join(", ") : ""}
-          onChange={(e) =>
-            onChange(
-              e.target.value
-                .split(",")
-                .map((s) => s.trim())
-                .filter(Boolean)
-            )
-          }
+        <ArrayStringInput
+          value={value}
+          onChange={onChange as (v: string[]) => void}
           disabled={disabled}
         />
       )}
@@ -244,3 +235,62 @@ const styles: Record<string, React.CSSProperties> = {
     fontStyle: "italic",
   },
 };
+
+/**
+ * Local-state array input.
+ *
+ * The displayed text is the user's literal typing — we do NOT round-trip through
+ * the array value for display, because that eats commas and spaces mid-edit.
+ *
+ * We still emit the parsed array on every change so the parent stays in sync.
+ * We resync the local text from the prop only when the prop is set externally
+ * (e.g., loading a saved example). Distinguishes "my own emission echoed back"
+ * vs "external change" via a ref holding the last array we emitted.
+ */
+function ArrayStringInput({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: unknown;
+  onChange: (v: string[]) => void;
+  disabled?: boolean;
+}) {
+  const incomingArr = Array.isArray(value) ? (value as string[]) : [];
+  const [text, setText] = useState(() => incomingArr.join(", "));
+  const lastEmittedRef = useRef<string[]>(incomingArr);
+
+  // Resync from an external value change (e.g., load example).
+  // If the incoming array equals what we last emitted, do nothing — this is
+  // our own value bouncing back through React's render cycle.
+  useEffect(() => {
+    const incomingJson = JSON.stringify(incomingArr);
+    const lastJson = JSON.stringify(lastEmittedRef.current);
+    if (incomingJson !== lastJson) {
+      setText(incomingArr.join(", "));
+      lastEmittedRef.current = incomingArr;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [JSON.stringify(incomingArr)]);
+
+  const handleChange = (e: ChangeEvent<HTMLInputElement>) => {
+    const raw = e.target.value;
+    setText(raw);
+    // Emit the parsed array — trim and drop empty entries for the consumer,
+    // but keep `text` unmodified so the user sees what they typed.
+    const parsed = raw.split(",").map((s) => s.trim()).filter(Boolean);
+    lastEmittedRef.current = parsed;
+    onChange(parsed);
+  };
+
+  return (
+    <input
+      style={styles.input}
+      type="text"
+      placeholder="comma-separated values"
+      value={text}
+      onChange={handleChange}
+      disabled={disabled}
+    />
+  );
+}
