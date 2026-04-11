@@ -68,6 +68,10 @@ def _graph_out(graph: Graph, latest_version_number: int | None = None) -> GraphO
         id=graph.id,
         name=graph.name,
         description=graph.description,
+        slug=graph.slug,
+        input_schema=graph.input_schema,
+        output_schema=graph.output_schema,
+        retention_days=graph.retention_days,
         version=graph.version,
         parent_graph_id=graph.parent_graph_id,
         created_by=graph.created_by,
@@ -164,6 +168,56 @@ async def get_graph(graph_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
             select(GraphVersion.version).where(GraphVersion.id == graph.latest_published_version_id)
         )
         latest_version_number = v_result.scalar_one_or_none()
+    return _graph_out(graph, latest_version_number=latest_version_number)
+
+
+@router.patch("/{graph_id}", response_model=GraphOut)
+async def patch_graph(
+    graph_id: uuid.UUID,
+    body: GraphUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    """Partial update: slug, schemas, and other scalar fields. Does NOT touch nodes/edges."""
+    graph = await _load_graph(graph_id, db)
+
+    updates = body.model_dump(exclude_unset=True)
+
+    # Slug uniqueness check within org
+    if "slug" in updates and updates["slug"] is not None:
+        dup = await db.execute(
+            select(Graph).where(
+                Graph.org_id == graph.org_id,
+                Graph.slug == updates["slug"],
+                Graph.id != graph.id,
+            )
+        )
+        if dup.scalar_one_or_none():
+            raise HTTPException(
+                status_code=409,
+                detail=f"slug '{updates['slug']}' already in use by another graph in this org",
+            )
+
+    PATCHABLE = {"name", "description", "slug", "input_schema", "output_schema", "retention_days"}
+    for field, value in updates.items():
+        if field in PATCHABLE:
+            setattr(graph, field, value)
+
+    graph.updated_at = datetime.now(timezone.utc)
+    await db.flush()
+    # Refresh all scalar columns from the DB (picks up the flushed values).
+    await db.refresh(graph, attribute_names=["slug", "input_schema", "output_schema",
+                                             "name", "description", "retention_days",
+                                             "updated_at"])
+    # Ensure relationships are populated (they were loaded by _load_graph at the top).
+    # Re-use the already-loaded nodes/edges from the graph object; they haven't changed.
+
+    latest_version_number = None
+    if graph.latest_published_version_id:
+        v_result = await db.execute(
+            select(GraphVersion.version).where(GraphVersion.id == graph.latest_published_version_id)
+        )
+        latest_version_number = v_result.scalar_one_or_none()
+
     return _graph_out(graph, latest_version_number=latest_version_number)
 
 
