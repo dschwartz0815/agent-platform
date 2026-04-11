@@ -160,3 +160,62 @@ export interface GraphVersion extends GraphVersionSummary {
 export interface GraphPublishBody {
   notes?: string | null;
 }
+
+export interface RunStep {
+  id: string;
+  node_key: string;
+  node_type: string;
+  status: "running" | "succeeded" | "failed" | "skipped";
+  started_at: string;
+  completed_at: string | null;
+  duration_ms: number | null;
+  input_snapshot: Record<string, unknown> | null;
+  output_snapshot: Record<string, unknown> | null;
+  token_usage: Record<string, number> | null;
+  error_message: string | null;
+  step_order: number;
+}
+
+export interface RunSummary {
+  id: string;
+  graph_id: string;
+  graph_version_id: string | null;
+  trigger_source: string;
+  status: "queued" | "running" | "succeeded" | "failed" | "canceled";
+  started_at: string;
+  completed_at: string | null;
+  duration_ms: number | null;
+  token_usage: Record<string, number> | null;
+  error_message: string | null;
+  input_preview: string;
+}
+
+export interface Run {
+  id: string;
+  graph_id: string;
+  graph_version_id: string | null;
+  trigger_source: string;
+  status: "queued" | "running" | "succeeded" | "failed" | "canceled";
+  input_json: Record<string, unknown>;
+  output_json: Record<string, unknown> | null;
+  error_message: string | null;
+  started_at: string;
+  completed_at: string | null;
+  duration_ms: number | null;
+  token_usage: Record<string, number> | null;
+  steps: RunStep[];
+}
+
+export interface TestExample {
+  id: string;
+  name: string;
+  input: Record<string, unknown>;
+  output: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export interface TestExampleCreate {
+  name: string;
+  input: Record<string, unknown>;
+  output?: Record<string, unknown> | null;
+}

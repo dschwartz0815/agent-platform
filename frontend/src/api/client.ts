@@ -12,6 +12,10 @@ import type {
   MCPServerCreate,
   MCPServerUpdate,
   MCPTool,
+  Run,
+  RunSummary,
+  TestExample,
+  TestExampleCreate,
   Usage,
 } from "../types";
 
@@ -169,3 +173,29 @@ export function streamRun(
 
   return controller;
 }
+
+// Runs
+export const listGraphRuns = (
+  graphId: string,
+  opts?: { status?: string; limit?: number; offset?: number }
+): Promise<RunSummary[]> => {
+  const params = new URLSearchParams();
+  if (opts?.status) params.set("status", opts.status);
+  if (opts?.limit != null) params.set("limit", String(opts.limit));
+  if (opts?.offset != null) params.set("offset", String(opts.offset));
+  const qs = params.toString();
+  return api.get(`/graphs/${graphId}/runs${qs ? "?" + qs : ""}`).then((r) => r.data);
+};
+
+export const getRun = (runId: string): Promise<Run> =>
+  api.get(`/runs/${runId}`).then((r) => r.data);
+
+// Examples
+export const createExample = (
+  graphId: string,
+  body: TestExampleCreate
+): Promise<TestExample> =>
+  api.post(`/graphs/${graphId}/examples`, body).then((r) => r.data);
+
+export const deleteExample = (graphId: string, exampleId: string): Promise<void> =>
+  api.delete(`/graphs/${graphId}/examples/${exampleId}`).then(() => undefined);
