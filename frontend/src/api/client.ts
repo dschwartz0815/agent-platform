@@ -3,6 +3,9 @@ import type {
   Agent,
   AgentCreate,
   AgentUpdate,
+  ApiKey,
+  ApiKeyCreate,
+  ApiKeyCreated,
   Graph,
   GraphPublishBody,
   GraphSummary,
@@ -199,3 +202,16 @@ export const createExample = (
 
 export const deleteExample = (graphId: string, exampleId: string): Promise<void> =>
   api.delete(`/graphs/${graphId}/examples/${exampleId}`).then(() => undefined);
+
+// API Keys
+export const listApiKeys = (): Promise<ApiKey[]> =>
+  api.get("/api-keys").then((r) => r.data);
+
+export const createApiKey = (body: ApiKeyCreate): Promise<ApiKeyCreated> =>
+  api.post("/api-keys", body).then((r) => r.data);
+
+export const revokeApiKey = (id: string): Promise<ApiKey> =>
+  api.post(`/api-keys/${id}/revoke`).then((r) => r.data);
+
+export const deleteApiKey = (id: string): Promise<void> =>
+  api.delete(`/api-keys/${id}`).then(() => undefined);

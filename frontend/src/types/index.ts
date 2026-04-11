@@ -219,3 +219,25 @@ export interface TestExampleCreate {
   input: Record<string, unknown>;
   output?: Record<string, unknown> | null;
 }
+
+export interface ApiKey {
+  id: string;
+  org_id: string;
+  name: string;
+  key_prefix: string;
+  key_last4: string;
+  scopes: string[]; // ["*"] or list of graph UUIDs
+  created_by: string;
+  created_at: string;
+  last_used_at: string | null;
+  revoked_at: string | null;
+}
+
+export interface ApiKeyCreate {
+  name: string;
+  scopes: string[];
+}
+
+export interface ApiKeyCreated extends ApiKey {
+  key: string; // plaintext, shown ONCE
+}
