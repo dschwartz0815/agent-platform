@@ -52,9 +52,14 @@ export function GraphList({ onOpen }: Props) {
         <div key={g.id} style={styles.card}>
           <div style={styles.cardBody}>
             <div style={styles.cardTitle}>{g.name}</div>
+            {g.slug && (
+              <code style={styles.slug}>acme/{g.slug}</code>
+            )}
             {g.description && <div style={styles.cardDesc}>{g.description}</div>}
             <div style={styles.cardMeta}>
-              v{g.version}
+              {g.latest_version_number
+                ? <>v{g.latest_version_number} (latest)</>
+                : <>draft only</>}
               {g.parent_graph_id && " · cloned"}
               {" · "}
               {new Date(g.updated_at).toLocaleDateString()}
@@ -102,6 +107,17 @@ const styles: Record<string, React.CSSProperties> = {
   cardTitle: { fontWeight: 600, fontSize: 16 },
   cardDesc: { color: "#6b7280", fontSize: 13, marginTop: 2 },
   cardMeta: { color: "#9ca3af", fontSize: 12, marginTop: 4 },
+  slug: {
+    display: "inline-block",
+    fontFamily: "monospace",
+    fontSize: 11,
+    color: "#6b7280",
+    background: "#f3f4f6",
+    padding: "1px 6px",
+    borderRadius: 3,
+    marginTop: 3,
+    marginBottom: 3,
+  },
   cardActions: { display: "flex", gap: 8 },
   btn: {
     background: "#f3f4f6", border: "1px solid #d1d5db",

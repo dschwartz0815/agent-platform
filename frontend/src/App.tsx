@@ -2,6 +2,7 @@ import { useState } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { GraphList } from "./components/GraphList";
 import { GraphEditor } from "./components/GraphEditor";
+import { GraphDetail } from "./components/GraphDetail";
 import { AgentList } from "./components/AgentList";
 import { MCPServerList } from "./components/MCPServerList";
 
@@ -13,24 +14,45 @@ type View = "graphs" | "agents" | "mcp-servers";
 
 export default function App() {
   const [view, setView] = useState<View>("graphs");
-  const [openGraphId, setOpenGraphId] = useState<string | null>(null);
+  const [detailGraphId, setDetailGraphId] = useState<string | null>(null);
+  const [editorGraphId, setEditorGraphId] = useState<string | null>(null);
 
-  const openGraph = (id: string) => {
-    setOpenGraphId(id);
+  const openGraphDetail = (id: string) => {
+    setDetailGraphId(id);
+    setEditorGraphId(null);
     setView("graphs");
+  };
+
+  const openGraphEditor = (id: string) => {
+    setEditorGraphId(id);
+  };
+
+  const backFromEditor = () => {
+    setEditorGraphId(null);
+    // detailGraphId stays set → we return to the detail page
+  };
+
+  const backFromDetail = () => {
+    setDetailGraphId(null);
   };
 
   return (
     <QueryClientProvider client={queryClient}>
       <div style={{ fontFamily: "system-ui, sans-serif", background: "#f9fafb", minHeight: "100vh" }}>
-        {openGraphId ? (
-          <GraphEditor graphId={openGraphId} onBack={() => setOpenGraphId(null)} />
+        {editorGraphId ? (
+          <GraphEditor graphId={editorGraphId} onBack={backFromEditor} />
+        ) : detailGraphId ? (
+          <GraphDetail
+            graphId={detailGraphId}
+            onBack={backFromDetail}
+            onEdit={openGraphEditor}
+          />
         ) : (
           <>
             <Header view={view} onChange={setView} />
-            {view === "graphs" && <GraphList onOpen={openGraph} />}
-            {view === "agents" && <AgentList onOpenGraph={openGraph} />}
-            {view === "mcp-servers" && <MCPServerList onOpenGraph={openGraph} />}
+            {view === "graphs" && <GraphList onOpen={openGraphDetail} />}
+            {view === "agents" && <AgentList onOpenGraph={openGraphDetail} />}
+            {view === "mcp-servers" && <MCPServerList onOpenGraph={openGraphDetail} />}
           </>
         )}
       </div>
