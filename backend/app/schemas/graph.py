@@ -77,6 +77,8 @@ class GraphSummary(GraphBase):
     org_id: uuid.UUID
     created_at: datetime
     updated_at: datetime
+    latest_published_version_id: uuid.UUID | None = None
+    latest_version_number: int | None = None  # derived, populated in router
 
     model_config = {"from_attributes": True}
 

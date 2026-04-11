@@ -109,7 +109,40 @@ def _graph_out(graph: Graph, latest_version_number: int | None = None) -> GraphO
 @router.get("/", response_model=list[GraphSummary])
 async def list_graphs(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Graph).order_by(Graph.updated_at.desc()))
-    return result.scalars().all()
+    graphs = result.scalars().all()
+    if not graphs:
+        return []
+
+    # Bulk-load the version numbers for any graphs that have a latest_published_version_id
+    version_ids = [g.latest_published_version_id for g in graphs if g.latest_published_version_id]
+    version_map: dict[uuid.UUID, int] = {}
+    if version_ids:
+        v_result = await db.execute(
+            select(GraphVersion.id, GraphVersion.version).where(GraphVersion.id.in_(version_ids))
+        )
+        version_map = {row[0]: row[1] for row in v_result.all()}
+
+    return [
+        GraphSummary(
+            id=g.id,
+            name=g.name,
+            description=g.description,
+            slug=g.slug,
+            input_schema=g.input_schema,
+            output_schema=g.output_schema,
+            retention_days=g.retention_days,
+            test_examples=g.test_examples,
+            version=g.version,
+            parent_graph_id=g.parent_graph_id,
+            created_by=g.created_by,
+            org_id=g.org_id,
+            created_at=g.created_at,
+            updated_at=g.updated_at,
+            latest_published_version_id=g.latest_published_version_id,
+            latest_version_number=version_map.get(g.latest_published_version_id) if g.latest_published_version_id else None,
+        )
+        for g in graphs
+    ]
 
 
 @router.post("/", response_model=GraphOut, status_code=201)
