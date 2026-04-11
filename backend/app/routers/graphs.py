@@ -72,6 +72,7 @@ def _graph_out(graph: Graph, latest_version_number: int | None = None) -> GraphO
         input_schema=graph.input_schema,
         output_schema=graph.output_schema,
         retention_days=graph.retention_days,
+        test_examples=graph.test_examples,
         version=graph.version,
         parent_graph_id=graph.parent_graph_id,
         created_by=graph.created_by,

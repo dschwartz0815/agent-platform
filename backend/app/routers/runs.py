@@ -3,20 +3,25 @@ Run list + detail endpoints.
 
 GET /api/v1/graphs/{graph_id}/runs       — paginated list of runs for a graph
 GET /api/v1/runs/{run_id}                — full run detail with nested steps
+POST /api/v1/graphs/{graph_id}/examples  — add a test example to a graph
+DELETE /api/v1/graphs/{graph_id}/examples/{example_id} — remove a test example
 """
 
 import json
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from sqlalchemy.orm.attributes import flag_modified
+
 from app.db import get_db
 from app.models.graph import Graph
 from app.models.run import Run
-from app.schemas.run import RunOut, RunSummary, RunStepOut
+from app.schemas.run import ExampleCreate, ExampleOut, RunOut, RunSummary, RunStepOut
 
 
 router = APIRouter(tags=["runs"])
@@ -93,3 +98,55 @@ async def get_run(run_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
         token_usage=run.token_usage,
         steps=[RunStepOut.model_validate(s) for s in run.steps],
     )
+
+
+@router.post(
+    "/graphs/{graph_id}/examples",
+    response_model=ExampleOut,
+    status_code=201,
+)
+async def create_example(
+    graph_id: uuid.UUID,
+    body: ExampleCreate,
+    db: AsyncSession = Depends(get_db),
+):
+    graph = await db.get(Graph, graph_id)
+    if not graph:
+        raise HTTPException(status_code=404, detail="Graph not found")
+
+    example = {
+        "id": str(uuid.uuid4()),
+        "name": body.name,
+        "input": body.input,
+        "output": body.output,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    existing = list(graph.test_examples or [])
+    existing.append(example)
+    graph.test_examples = existing
+    flag_modified(graph, "test_examples")
+    await db.flush()
+    return example
+
+
+@router.delete(
+    "/graphs/{graph_id}/examples/{example_id}",
+    status_code=204,
+)
+async def delete_example(
+    graph_id: uuid.UUID,
+    example_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    graph = await db.get(Graph, graph_id)
+    if not graph:
+        raise HTTPException(status_code=404, detail="Graph not found")
+
+    existing = list(graph.test_examples or [])
+    filtered = [e for e in existing if e.get("id") != example_id]
+    if len(filtered) == len(existing):
+        raise HTTPException(status_code=404, detail="Example not found")
+
+    graph.test_examples = filtered or None
+    flag_modified(graph, "test_examples")
+    await db.flush()
