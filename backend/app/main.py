@@ -16,7 +16,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from app.config import settings
 from app.db import engine
 from app.logging_config import configure_logging, request_id_var
-from app.routers import agents, api_keys, execution, graphs, mcp_servers, runs
+from app.routers import agents, api_keys, execution, graphs, mcp_servers, public_runs, runs
 
 configure_logging(settings.log_level)
 log = logging.getLogger(__name__)
@@ -107,6 +107,7 @@ app.include_router(agents.router, prefix="/api/v1")
 app.include_router(mcp_servers.router, prefix="/api/v1")
 app.include_router(runs.router, prefix="/api/v1")
 app.include_router(api_keys.router, prefix="/api/v1")
+app.include_router(public_runs.router)  # no prefix — exposes /v1/run/...
 
 
 # ---------------------------------------------------------------------------
