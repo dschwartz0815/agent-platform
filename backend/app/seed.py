@@ -57,6 +57,49 @@ _HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SEED_MCP_SCRIPT = os.path.join(_HERE, "seed_services", "mock_mcp_server.py")
 SEED_A2A_URL = os.environ.get("SEED_AGENT_URL", "http://seed-agent:8001")
 
+_SEED_INPUT_SCHEMA = {
+    "type": "object",
+    "required": ["title", "description", "affected_services"],
+    "properties": {
+        "title": {
+            "type": "string",
+            "description": "Short title of the change request",
+        },
+        "description": {
+            "type": "string",
+            "description": "Full description of what's being changed and why",
+        },
+        "affected_services": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Names of services affected by the change",
+        },
+        "proposed_window": {
+            "type": "string",
+            "description": "When the change will happen (e.g. 'Sat 02:00 UTC')",
+        },
+    },
+}
+
+_SEED_OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "classification": {
+            "type": "object",
+            "properties": {
+                "risk_level": {"type": "string", "enum": ["high", "medium", "low"]},
+                "confidence": {"type": "number"},
+                "reasoning": {"type": "string"},
+                "key_concerns": {"type": "array", "items": {"type": "string"}},
+            },
+        },
+        "report": {
+            "type": "string",
+            "description": "Final markdown risk report",
+        },
+    },
+}
+
 
 # ---------------------------------------------------------------------------
 # Stats counter
@@ -125,13 +168,16 @@ def _desired_agent() -> dict:
 
 def _desired_graph_meta() -> dict:
     return {
-        "name":        "Change Request Risk Analyzer",
+        "name": "Change Request Risk Analyzer",
+        "slug": "change-risk-analyzer",
         "description": (
             "Analyzes a software change request end-to-end. "
             "Classifies risk (high/medium/low), fetches service dependencies, "
             "calls a specialist A2A agent for high-risk changes, "
             "and generates a final markdown report."
         ),
+        "input_schema": _SEED_INPUT_SCHEMA,
+        "output_schema": _SEED_OUTPUT_SCHEMA,
     }
 
 
@@ -313,10 +359,17 @@ def _build_definition(nodes_data: list[dict], edges_data: list[dict]) -> dict:
 async def _upsert_org(db, stats: SeedStats) -> None:
     org = await db.get(Org, DEV_ORG_ID)
     if not org:
-        db.add(Org(id=DEV_ORG_ID, name="Demo Org"))
+        db.add(Org(id=DEV_ORG_ID, name="Demo Org", slug="demo"))
         stats["inserted"] += 1
     else:
-        stats["unchanged"] += 1
+        changed = False
+        if org.slug != "demo":
+            org.slug = "demo"
+            changed = True
+        if changed:
+            stats["updated"] += 1
+        else:
+            stats["unchanged"] += 1
 
 
 async def _upsert_user(db, stats: SeedStats) -> None:
@@ -443,6 +496,40 @@ async def _upsert_graph(db, stats: SeedStats) -> None:
             stats["unchanged"] += 1
 
 
+async def _ensure_seed_graph_published(db, stats: SeedStats) -> None:
+    """
+    Ensure the seed graph has at least one published version. Idempotent:
+    if a version already exists, this is a no-op.
+    """
+    from sqlalchemy import select
+    from app.models.graph import GraphVersion
+
+    graph = await db.get(Graph, SEED_GRAPH_ID)
+    if not graph:
+        return
+
+    existing = await db.execute(
+        select(GraphVersion).where(GraphVersion.graph_id == SEED_GRAPH_ID)
+    )
+    if existing.first():
+        return  # already published
+
+    v1 = GraphVersion(
+        graph_id=graph.id,
+        version=1,
+        definition_json=graph.definition_json,
+        input_schema=graph.input_schema,
+        output_schema=graph.output_schema,
+        published_by=DEV_USER_ID,
+        notes="Initial seed publish",
+    )
+    db.add(v1)
+    await db.flush()
+    graph.latest_published_version_id = v1.id
+    stats["inserted"] += 1
+    log.info("seeded_graph_v1_published")
+
+
 async def _replace_nodes_edges(
     db,
     graph_id: uuid.UUID,
@@ -506,6 +593,7 @@ async def seed() -> None:
         await db.flush()
 
         await _upsert_graph(db, stats)
+        await _ensure_seed_graph_published(db, stats)
 
         await db.commit()
 
