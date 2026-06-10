@@ -1,10 +1,10 @@
 """
-API key management endpoints.
+API key management endpoints — workspace-scoped.
 
-GET /api/v1/api-keys           — list all keys for the dev org (never includes plaintext)
-POST /api/v1/api-keys          — create; returns plaintext ONCE
-POST /api/v1/api-keys/{id}/revoke — mark revoked
-DELETE /api/v1/api-keys/{id}   — hard delete
+GET /api/v1/api-keys              — list keys for the active workspace (never includes plaintext)
+POST /api/v1/api-keys             — create (admin+); returns plaintext ONCE
+POST /api/v1/api-keys/{id}/revoke — mark revoked (admin+)
+DELETE /api/v1/api-keys/{id}      — hard delete (admin+)
 """
 
 import uuid
@@ -14,10 +14,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import DEV_ORG_ID, DEV_USER_ID
 from app.db import get_db
 from app.models.api_key import ApiKey
 from app.schemas.api_key import ApiKeyCreate, ApiKeyCreatedOut, ApiKeyOut
+from app.security.identity import WorkspaceContext, get_workspace_context, require_role
 from app.services.api_keys import (
     generate_plaintext_key,
     hash_key,
@@ -28,26 +28,34 @@ router = APIRouter(prefix="/api-keys", tags=["api-keys"])
 
 
 @router.get("", response_model=list[ApiKeyOut])
-async def list_api_keys(db: AsyncSession = Depends(get_db)):
+async def list_api_keys(
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
+):
     result = await db.execute(
         select(ApiKey)
-        .where(ApiKey.org_id == DEV_ORG_ID)
+        .where(ApiKey.org_id == ctx.workspace.id)
         .order_by(ApiKey.created_at.desc())
     )
     return result.scalars().all()
 
 
 @router.post("", response_model=ApiKeyCreatedOut, status_code=201)
-async def create_api_key(body: ApiKeyCreate, db: AsyncSession = Depends(get_db)):
+async def create_api_key(
+    body: ApiKeyCreate,
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
+):
+    require_role(ctx, "admin")
     plaintext = generate_plaintext_key()
     row = ApiKey(
-        org_id=DEV_ORG_ID,
+        org_id=ctx.workspace.id,
         name=body.name,
         key_prefix=split_prefix(plaintext),
         key_hash=hash_key(plaintext),
         key_last4=plaintext[-4:],
         scopes=body.scopes,
-        created_by=DEV_USER_ID,
+        created_by=ctx.user.id,
     )
     db.add(row)
     await db.flush()
@@ -70,9 +78,14 @@ async def create_api_key(body: ApiKeyCreate, db: AsyncSession = Depends(get_db))
 
 
 @router.post("/{key_id}/revoke", response_model=ApiKeyOut)
-async def revoke_api_key(key_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def revoke_api_key(
+    key_id: uuid.UUID,
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
+):
+    require_role(ctx, "admin")
     key = await db.get(ApiKey, key_id)
-    if not key or key.org_id != DEV_ORG_ID:
+    if not key or key.org_id != ctx.workspace.id:
         raise HTTPException(status_code=404, detail="API key not found")
     key.revoked_at = datetime.now(timezone.utc)
     await db.flush()
@@ -81,9 +94,14 @@ async def revoke_api_key(key_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
 
 
 @router.delete("/{key_id}", status_code=204)
-async def delete_api_key(key_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def delete_api_key(
+    key_id: uuid.UUID,
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
+):
+    require_role(ctx, "admin")
     key = await db.get(ApiKey, key_id)
-    if not key or key.org_id != DEV_ORG_ID:
+    if not key or key.org_id != ctx.workspace.id:
         raise HTTPException(status_code=404, detail="API key not found")
     await db.delete(key)
     await db.flush()

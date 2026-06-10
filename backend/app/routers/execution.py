@@ -12,6 +12,7 @@ from app.models.agent import Agent
 from app.models.graph import Graph, GraphVersion
 from app.models.mcp_server import MCPServer
 from app.schemas.execution import RunRequest
+from app.security.identity import WorkspaceContext, get_workspace_context
 
 router = APIRouter(prefix="/graphs", tags=["execution"])
 
@@ -21,6 +22,7 @@ async def run_graph_endpoint(
     graph_id: uuid.UUID,
     body: RunRequest,
     version: int | None = Query(default=None, description="Pin to a specific published version"),
+    ctx: WorkspaceContext = Depends(get_workspace_context),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -39,7 +41,7 @@ async def run_graph_endpoint(
         and leaves graph_version_id null.
     """
     graph = await db.get(Graph, graph_id)
-    if not graph:
+    if not graph or graph.org_id != ctx.workspace.id:
         raise HTTPException(status_code=404, detail="Graph not found")
 
     # Resolve which definition to execute
@@ -75,10 +77,16 @@ async def run_graph_endpoint(
         if aid := cfg.get("agent_id"):
             agent_ids.add(str(aid))
 
+    # Refs resolve only within the graph's own workspace — a definition can
+    # never borrow another tenant's MCP servers or agents.
     mcp_servers: dict[str, dict] = {}
     if mcp_server_ids:
         uuids = [uuid.UUID(s) for s in mcp_server_ids]
-        result = await db.execute(select(MCPServer).where(MCPServer.id.in_(uuids)))
+        result = await db.execute(
+            select(MCPServer).where(
+                MCPServer.id.in_(uuids), MCPServer.org_id == graph.org_id
+            )
+        )
         for srv in result.scalars().all():
             mcp_servers[str(srv.id)] = {
                 "transport": srv.transport,
@@ -91,7 +99,9 @@ async def run_graph_endpoint(
     agents: dict[str, dict] = {}
     if agent_ids:
         uuids = [uuid.UUID(s) for s in agent_ids]
-        result = await db.execute(select(Agent).where(Agent.id.in_(uuids)))
+        result = await db.execute(
+            select(Agent).where(Agent.id.in_(uuids), Agent.org_id == graph.org_id)
+        )
         for ag in result.scalars().all():
             agents[str(ag.id)] = {
                 "url": ag.url,

@@ -6,7 +6,6 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.config import DEV_ORG_ID, DEV_USER_ID
 from app.db import get_db
 from app.models.agent import Agent
 from app.models.graph import Graph, GraphEdge, GraphNode, GraphVersion
@@ -22,6 +21,7 @@ from app.schemas.graph import (
     GraphVersionOut,
     GraphVersionSummary,
 )
+from app.security.identity import WorkspaceContext, get_workspace_context, require_role
 from app.services.publishing import PublishValidationError, validate_publishable
 
 router = APIRouter(prefix="/graphs", tags=["graphs"])
@@ -51,11 +51,14 @@ def _graph_to_definition(nodes: list[GraphNode], edges: list[GraphEdge]) -> dict
     }
 
 
-async def _load_graph(graph_id: uuid.UUID, db: AsyncSession) -> Graph:
+async def _load_graph(
+    graph_id: uuid.UUID, ctx: WorkspaceContext, db: AsyncSession
+) -> Graph:
+    """Workspace-scoped fetch — graphs in other workspaces surface as 404."""
     result = await db.execute(
         select(Graph)
         .options(selectinload(Graph.nodes), selectinload(Graph.edges))
-        .where(Graph.id == graph_id)
+        .where(Graph.id == graph_id, Graph.org_id == ctx.workspace.id)
     )
     graph = result.scalar_one_or_none()
     if not graph:
@@ -108,8 +111,15 @@ def _graph_out(graph: Graph, latest_version_number: int | None = None) -> GraphO
 
 
 @router.get("/", response_model=list[GraphSummary])
-async def list_graphs(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Graph).order_by(Graph.updated_at.desc()))
+async def list_graphs(
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Graph)
+        .where(Graph.org_id == ctx.workspace.id)
+        .order_by(Graph.updated_at.desc())
+    )
     graphs = result.scalars().all()
     if not graphs:
         return []
@@ -147,13 +157,18 @@ async def list_graphs(db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/", response_model=GraphOut, status_code=201)
-async def create_graph(body: GraphCreate, db: AsyncSession = Depends(get_db)):
+async def create_graph(
+    body: GraphCreate,
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
+):
+    require_role(ctx, "editor")
     graph = Graph(
         name=body.name,
         description=body.description,
         version=1,
-        created_by=DEV_USER_ID,
-        org_id=DEV_ORG_ID,
+        created_by=ctx.user.id,
+        org_id=ctx.workspace.id,
         definition_json={},
     )
     db.add(graph)
@@ -190,12 +205,16 @@ async def create_graph(body: GraphCreate, db: AsyncSession = Depends(get_db)):
     await db.refresh(graph)
 
     # Reload with relationships
-    return _graph_out(await _load_graph(graph.id, db))
+    return _graph_out(await _load_graph(graph.id, ctx, db))
 
 
 @router.get("/{graph_id}", response_model=GraphOut)
-async def get_graph(graph_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    graph = await _load_graph(graph_id, db)
+async def get_graph(
+    graph_id: uuid.UUID,
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
+):
+    graph = await _load_graph(graph_id, ctx, db)
     latest_version_number = None
     if graph.latest_published_version_id:
         v_result = await db.execute(
@@ -209,10 +228,12 @@ async def get_graph(graph_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
 async def patch_graph(
     graph_id: uuid.UUID,
     body: GraphUpdate,
+    ctx: WorkspaceContext = Depends(get_workspace_context),
     db: AsyncSession = Depends(get_db),
 ):
     """Partial update: slug, schemas, and other scalar fields. Does NOT touch nodes/edges."""
-    graph = await _load_graph(graph_id, db)
+    require_role(ctx, "editor")
+    graph = await _load_graph(graph_id, ctx, db)
 
     updates = body.model_dump(exclude_unset=True)
 
@@ -257,9 +278,13 @@ async def patch_graph(
 
 @router.put("/{graph_id}", response_model=GraphOut)
 async def update_graph(
-    graph_id: uuid.UUID, body: GraphUpdate, db: AsyncSession = Depends(get_db)
+    graph_id: uuid.UUID,
+    body: GraphUpdate,
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
 ):
-    graph = await _load_graph(graph_id, db)
+    require_role(ctx, "editor")
+    graph = await _load_graph(graph_id, ctx, db)
 
     if body.name is not None:
         graph.name = body.name
@@ -306,24 +331,26 @@ async def update_graph(
     graph.updated_at = datetime.now(timezone.utc)
     await db.flush()
 
-    return _graph_out(await _load_graph(graph.id, db))
+    return _graph_out(await _load_graph(graph.id, ctx, db))
 
 
 @router.post("/{graph_id}/clone", response_model=GraphOut, status_code=201)
 async def clone_graph(
     graph_id: uuid.UUID,
+    ctx: WorkspaceContext = Depends(get_workspace_context),
     db: AsyncSession = Depends(get_db),
 ):
-    """Fork a graph. The clone is owned by the dev user; real auth wires in user context."""
-    source = await _load_graph(graph_id, db)
+    """Fork a graph within the active workspace."""
+    require_role(ctx, "editor")
+    source = await _load_graph(graph_id, ctx, db)
 
     clone = Graph(
         name=f"{source.name} (copy)",
         description=source.description,
         version=1,
         parent_graph_id=source.id,
-        created_by=DEV_USER_ID,
-        org_id=DEV_ORG_ID,
+        created_by=ctx.user.id,
+        org_id=ctx.workspace.id,
         definition_json=source.definition_json,
     )
     db.add(clone)
@@ -349,13 +376,18 @@ async def clone_graph(
         ))
     await db.flush()
 
-    return _graph_out(await _load_graph(clone.id, db))
+    return _graph_out(await _load_graph(clone.id, ctx, db))
 
 
 @router.delete("/{graph_id}", status_code=204)
-async def delete_graph(graph_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def delete_graph(
+    graph_id: uuid.UUID,
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
+):
+    require_role(ctx, "editor")
     graph = await db.get(Graph, graph_id)
-    if not graph:
+    if not graph or graph.org_id != ctx.workspace.id:
         raise HTTPException(status_code=404, detail="Graph not found")
     await db.delete(graph)
 
@@ -368,10 +400,12 @@ async def delete_graph(graph_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
 async def publish_graph(
     graph_id: uuid.UUID,
     body: GraphPublishBody,
+    ctx: WorkspaceContext = Depends(get_workspace_context),
     db: AsyncSession = Depends(get_db),
 ):
+    require_role(ctx, "editor")
     graph = await db.get(Graph, graph_id)
-    if not graph:
+    if not graph or graph.org_id != ctx.workspace.id:
         raise HTTPException(status_code=404, detail="Graph not found")
 
     # Load known agent + mcp server ids for ref validation
@@ -403,7 +437,7 @@ async def publish_graph(
         definition_json=graph.definition_json,
         input_schema=graph.input_schema,
         output_schema=graph.output_schema,
-        published_by=graph.created_by,  # placeholder until auth lands in Plan C
+        published_by=ctx.user.id,
         notes=body.notes,
     )
     db.add(version)
@@ -421,10 +455,11 @@ async def publish_graph(
 )
 async def list_graph_versions(
     graph_id: uuid.UUID,
+    ctx: WorkspaceContext = Depends(get_workspace_context),
     db: AsyncSession = Depends(get_db),
 ):
     graph = await db.get(Graph, graph_id)
-    if not graph:
+    if not graph or graph.org_id != ctx.workspace.id:
         raise HTTPException(status_code=404, detail="Graph not found")
     result = await db.execute(
         select(GraphVersion)
@@ -441,8 +476,12 @@ async def list_graph_versions(
 async def get_graph_version(
     graph_id: uuid.UUID,
     version: int,
+    ctx: WorkspaceContext = Depends(get_workspace_context),
     db: AsyncSession = Depends(get_db),
 ):
+    graph = await db.get(Graph, graph_id)
+    if not graph or graph.org_id != ctx.workspace.id:
+        raise HTTPException(status_code=404, detail="Graph not found")
     result = await db.execute(
         select(GraphVersion).where(
             GraphVersion.graph_id == graph_id,

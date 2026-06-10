@@ -70,7 +70,9 @@ async def test_delete_example(client, db_session):
     assert graph_resp.json()["test_examples"] in (None, [])
 
 
-async def test_create_example_on_missing_graph_404(client):
+async def test_create_example_on_missing_graph_404(client, db_session):
+    db_session.add(Org(id=DEV_ORG_ID, name="T", slug="test"))
+    await db_session.flush()
     r = await client.post(
         f"/api/v1/graphs/{uuid.uuid4()}/examples",
         json={"name": "X", "input": {}},

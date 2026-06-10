@@ -75,8 +75,21 @@ async def db_session(test_engine) -> AsyncSession:
 
 @pytest_asyncio.fixture
 async def client(db_session) -> AsyncClient:
-    """httpx client talking to the FastAPI app with the test session injected."""
+    """httpx client talking to the FastAPI app with the test session injected.
+
+    Requests carry no identity headers, so the backend uses the dev fallback
+    identity (dev@example.com, groups: agent-platform-admins/-users). The
+    mapping below makes that identity an owner of the well-known DEV_ORG_ID
+    workspace, which the test files create themselves (with varying slugs).
+    """
+    from app.config import DEV_ORG_ID
     from app.main import app
+    from app.models.user import TenantGroupMapping
+
+    db_session.add(TenantGroupMapping(
+        org_id=DEV_ORG_ID, ad_group="agent-platform-admins", role="owner",
+    ))
+    await db_session.flush()
 
     async def _override_get_db():
         yield db_session

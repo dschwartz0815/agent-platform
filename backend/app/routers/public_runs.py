@@ -73,8 +73,12 @@ async def _load_definition(
     return gv.definition_json, gv.id
 
 
-async def _collect_refs(db: AsyncSession, definition: dict) -> tuple[dict, dict]:
-    """Load MCP server + agent rows referenced in the definition."""
+async def _collect_refs(
+    db: AsyncSession, definition: dict, org_id: uuid.UUID
+) -> tuple[dict, dict]:
+    """Load MCP server + agent rows referenced in the definition.
+    Refs resolve only within the owning workspace — definitions can never
+    borrow another tenant's MCP servers or agents."""
     mcp_server_ids: set[str] = set()
     agent_ids: set[str] = set()
     for node in definition.get("nodes", []):
@@ -89,7 +93,9 @@ async def _collect_refs(db: AsyncSession, definition: dict) -> tuple[dict, dict]
     mcp_servers: dict[str, dict] = {}
     if mcp_server_ids:
         uuids = [uuid.UUID(s) for s in mcp_server_ids]
-        result = await db.execute(select(MCPServer).where(MCPServer.id.in_(uuids)))
+        result = await db.execute(
+            select(MCPServer).where(MCPServer.id.in_(uuids), MCPServer.org_id == org_id)
+        )
         for srv in result.scalars().all():
             mcp_servers[str(srv.id)] = {
                 "transport": srv.transport,
@@ -102,7 +108,9 @@ async def _collect_refs(db: AsyncSession, definition: dict) -> tuple[dict, dict]
     agents: dict[str, dict] = {}
     if agent_ids:
         uuids = [uuid.UUID(s) for s in agent_ids]
-        result = await db.execute(select(Agent).where(Agent.id.in_(uuids)))
+        result = await db.execute(
+            select(Agent).where(Agent.id.in_(uuids), Agent.org_id == org_id)
+        )
         for ag in result.scalars().all():
             agents[str(ag.id)] = {
                 "url": ag.url,
@@ -153,7 +161,7 @@ async def public_run(
         raise HTTPException(status_code=422, detail="Graph has no definition")
 
     # 7. Collect referenced agents / mcp servers
-    mcp_servers, agents = await _collect_refs(db, definition)
+    mcp_servers, agents = await _collect_refs(db, definition, org.id)
 
     trigger_source = "api_stream" if mode == "stream" else "api_sync"
 

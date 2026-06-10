@@ -22,9 +22,19 @@ from app.db import get_db
 from app.models.graph import Graph
 from app.models.run import Run
 from app.schemas.run import ExampleCreate, ExampleOut, RunOut, RunSummary, RunStepOut
+from app.security.identity import WorkspaceContext, get_workspace_context, require_role
 
 
 router = APIRouter(tags=["runs"])
+
+
+async def _load_graph_scoped(
+    graph_id: uuid.UUID, ctx: WorkspaceContext, db: AsyncSession
+) -> Graph:
+    graph = await db.get(Graph, graph_id)
+    if not graph or graph.org_id != ctx.workspace.id:
+        raise HTTPException(status_code=404, detail="Graph not found")
+    return graph
 
 
 def _build_input_preview(input_json: dict) -> str:
@@ -58,11 +68,10 @@ async def list_graph_runs(
     status: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
+    ctx: WorkspaceContext = Depends(get_workspace_context),
     db: AsyncSession = Depends(get_db),
 ):
-    graph = await db.get(Graph, graph_id)
-    if not graph:
-        raise HTTPException(status_code=404, detail="Graph not found")
+    await _load_graph_scoped(graph_id, ctx, db)
 
     query = select(Run).where(Run.graph_id == graph_id).order_by(Run.started_at.desc())
     if status:
@@ -75,9 +84,16 @@ async def list_graph_runs(
 
 
 @router.get("/runs/{run_id}", response_model=RunOut)
-async def get_run(run_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def get_run(
+    run_id: uuid.UUID,
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
+):
     result = await db.execute(
-        select(Run).options(selectinload(Run.steps)).where(Run.id == run_id)
+        select(Run)
+        .options(selectinload(Run.steps))
+        .join(Graph, Run.graph_id == Graph.id)
+        .where(Run.id == run_id, Graph.org_id == ctx.workspace.id)
     )
     run = result.scalar_one_or_none()
     if not run:
@@ -108,11 +124,11 @@ async def get_run(run_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
 async def create_example(
     graph_id: uuid.UUID,
     body: ExampleCreate,
+    ctx: WorkspaceContext = Depends(get_workspace_context),
     db: AsyncSession = Depends(get_db),
 ):
-    graph = await db.get(Graph, graph_id)
-    if not graph:
-        raise HTTPException(status_code=404, detail="Graph not found")
+    require_role(ctx, "editor")
+    graph = await _load_graph_scoped(graph_id, ctx, db)
 
     example = {
         "id": str(uuid.uuid4()),
@@ -136,11 +152,11 @@ async def create_example(
 async def delete_example(
     graph_id: uuid.UUID,
     example_id: str,
+    ctx: WorkspaceContext = Depends(get_workspace_context),
     db: AsyncSession = Depends(get_db),
 ):
-    graph = await db.get(Graph, graph_id)
-    if not graph:
-        raise HTTPException(status_code=404, detail="Graph not found")
+    require_role(ctx, "editor")
+    graph = await _load_graph_scoped(graph_id, ctx, db)
 
     existing = list(graph.test_examples or [])
     filtered = [e for e in existing if e.get("id") != example_id]
