@@ -4,7 +4,9 @@ import {
   deleteAgent,
   getAgentUsages,
   listAgents,
+  publishAgent,
   refreshAgentCard,
+  unpublishAgent,
 } from "../../api/client";
 import { Modal } from "../shared/Modal";
 import { UsageWarning } from "../shared/UsageWarning";
@@ -60,6 +62,24 @@ export function AgentList({ onOpenGraph }: Props) {
     onError: () => setBanner({ kind: "error", text: "Refresh failed. The agent may be unreachable." }),
   });
 
+  const publishMut = useMutation({
+    mutationFn: ({ id, publish }: { id: string; publish: boolean }) =>
+      publish ? publishAgent(id) : unpublishAgent(id),
+    onSuccess: (updated) => {
+      qc.invalidateQueries({ queryKey: ["agents"] });
+      qc.invalidateQueries({ queryKey: ["catalog"] });
+      setBanner({
+        kind: "success",
+        text:
+          updated.visibility === "catalog"
+            ? `"${updated.name}" published to the catalog.`
+            : `"${updated.name}" removed from the catalog.`,
+      });
+    },
+    onError: () =>
+      setBanner({ kind: "error", text: "Publish failed (requires the admin role)." }),
+  });
+
   const deleteMut = useMutation({
     mutationFn: (id: string) => deleteAgent(id),
     onSuccess: () => {
@@ -113,6 +133,8 @@ export function AgentList({ onOpenGraph }: Props) {
               <span style={styles.cardTitle}>{a.name}</span>
               <TypeBadge type={a.agent_type} />
               {a.agent_type === "http" && <CardStatus fetched={Boolean(a.agent_card_json)} />}
+              {a.visibility === "catalog" && <span style={catalogBadge}>In catalog</span>}
+              {a.source_id && <span style={installedBadge}>Installed</span>}
             </div>
             {a.description && <div style={styles.cardDesc}>{a.description}</div>}
             <div style={styles.cardMeta}>
@@ -138,6 +160,14 @@ export function AgentList({ onOpenGraph }: Props) {
                 {refreshMut.isPending && refreshMut.variables === a.id ? "Refreshing…" : "Refresh"}
               </button>
             )}
+            <button
+              style={styles.btn}
+              onClick={() => publishMut.mutate({ id: a.id, publish: a.visibility !== "catalog" })}
+              disabled={publishMut.isPending}
+              title="Publishing makes this agent discoverable and installable by other workspaces (admin only)"
+            >
+              {a.visibility === "catalog" ? "Unpublish" : "Publish"}
+            </button>
             <button
               style={{ ...styles.btn, color: "#dc2626" }}
               onClick={() => askDelete(a)}
@@ -340,4 +370,14 @@ const styles: Record<string, React.CSSProperties> = {
     marginTop: 10, marginBottom: 4,
     cursor: "pointer",
   },
+};
+
+const catalogBadge: React.CSSProperties = {
+  background: "#fdf4ff", color: "#86198f", borderRadius: 999,
+  padding: "2px 10px", fontSize: 11, fontWeight: 700,
+};
+
+const installedBadge: React.CSSProperties = {
+  background: "#f0f9ff", color: "#0369a1", borderRadius: 999,
+  padding: "2px 10px", fontSize: 11, fontWeight: 700,
 };

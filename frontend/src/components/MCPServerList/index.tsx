@@ -4,7 +4,9 @@ import {
   deleteMCPServer,
   getMCPServerUsages,
   listMCPServers,
+  publishMCPServer,
   refreshMCPServerTools,
+  unpublishMCPServer,
 } from "../../api/client";
 import { Modal } from "../shared/Modal";
 import { UsageWarning } from "../shared/UsageWarning";
@@ -53,6 +55,24 @@ export function MCPServerList({ onOpenGraph }: Props) {
       kind: "error",
       text: "Refresh failed. The server may be unreachable, or (for stdio) the command is missing on the backend.",
     }),
+  });
+
+  const publishMut = useMutation({
+    mutationFn: ({ id, publish }: { id: string; publish: boolean }) =>
+      publish ? publishMCPServer(id) : unpublishMCPServer(id),
+    onSuccess: (updated) => {
+      qc.invalidateQueries({ queryKey: ["mcp-servers"] });
+      qc.invalidateQueries({ queryKey: ["catalog"] });
+      setBanner({
+        kind: "success",
+        text:
+          updated.visibility === "catalog"
+            ? `"${updated.name}" published to the catalog.`
+            : `"${updated.name}" removed from the catalog.`,
+      });
+    },
+    onError: () =>
+      setBanner({ kind: "error", text: "Publish failed (requires the admin role)." }),
   });
 
   const deleteMut = useMutation({
@@ -111,6 +131,8 @@ export function MCPServerList({ onOpenGraph }: Props) {
                 <span style={styles.cardTitle}>{s.name}</span>
                 <TransportBadge transport={s.transport} />
                 <ToolsStatus discovered={discovered} count={toolCount} />
+                {s.visibility === "catalog" && <span style={catalogBadge}>In catalog</span>}
+                {s.source_id && <span style={installedBadge}>Installed</span>}
               </div>
               {s.description && <div style={styles.cardDesc}>{s.description}</div>}
               <div style={styles.cardMeta}>
@@ -135,6 +157,14 @@ export function MCPServerList({ onOpenGraph }: Props) {
                 disabled={refreshMut.isPending && refreshMut.variables === s.id}
               >
                 {refreshMut.isPending && refreshMut.variables === s.id ? "Refreshing…" : "Refresh"}
+              </button>
+              <button
+                style={styles.btn}
+                onClick={() => publishMut.mutate({ id: s.id, publish: s.visibility !== "catalog" })}
+                disabled={publishMut.isPending}
+                title="Publishing makes this server discoverable and installable by other workspaces (admin only)"
+              >
+                {s.visibility === "catalog" ? "Unpublish" : "Publish"}
               </button>
               <button
                 style={{ ...styles.btn, color: "#dc2626" }}
@@ -334,4 +364,14 @@ const styles: Record<string, React.CSSProperties> = {
     display: "flex", alignItems: "center", gap: 6,
     marginTop: 10, marginBottom: 4, cursor: "pointer",
   },
+};
+
+const catalogBadge: React.CSSProperties = {
+  background: "#fdf4ff", color: "#86198f", borderRadius: 999,
+  padding: "2px 10px", fontSize: 11, fontWeight: 700,
+};
+
+const installedBadge: React.CSSProperties = {
+  background: "#f0f9ff", color: "#0369a1", borderRadius: 999,
+  padding: "2px 10px", fontSize: 11, fontWeight: 700,
 };
