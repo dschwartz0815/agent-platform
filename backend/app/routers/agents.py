@@ -1,42 +1,65 @@
+"""
+Agent registry — workspace-scoped CRUD + catalog publishing.
+
+Every endpoint resolves the caller's active workspace from their AD-group
+memberships (see security/identity.py). Reads are filtered to that workspace;
+writes require the 'editor' role; catalog publish/unpublish requires 'admin'.
+"""
+
 import logging
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.a2a.card import try_fetch_agent_card
-from app.config import DEV_ORG_ID, DEV_USER_ID
 from app.db import get_db
 from app.models.agent import Agent
 from app.models.graph import Graph
 from app.schemas.agent import AgentCreate, AgentOut, AgentUpdate
+from app.security.identity import WorkspaceContext, get_workspace_context, require_role
 
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/agents", tags=["agents"])
 
 
-def _current_user_id() -> uuid.UUID:
-    return DEV_USER_ID
-
-
-def _current_org_id() -> uuid.UUID:
-    return DEV_ORG_ID
+async def _load_agent(
+    agent_id: uuid.UUID, ctx: WorkspaceContext, db: AsyncSession
+) -> Agent:
+    """Workspace-scoped fetch — rows in other workspaces surface as 404."""
+    agent = await db.get(Agent, agent_id)
+    if not agent or agent.org_id != ctx.workspace.id:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    return agent
 
 
 @router.get("/", response_model=list[AgentOut])
-async def list_agents(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Agent).order_by(Agent.created_at.desc()))
+async def list_agents(
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Agent)
+        .where(Agent.org_id == ctx.workspace.id)
+        .order_by(Agent.created_at.desc())
+    )
     return result.scalars().all()
 
 
 @router.post("/", response_model=AgentOut, status_code=201)
-async def create_agent(body: AgentCreate, db: AsyncSession = Depends(get_db)):
+async def create_agent(
+    body: AgentCreate,
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
+):
+    require_role(ctx, "editor")
     agent = Agent(
         **body.model_dump(),
-        created_by=_current_user_id(),
-        org_id=_current_org_id(),
+        created_by=ctx.user.id,
+        org_id=ctx.workspace.id,
     )
     db.add(agent)
     await db.flush()
@@ -56,20 +79,23 @@ async def create_agent(body: AgentCreate, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/{agent_id}", response_model=AgentOut)
-async def get_agent(agent_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    agent = await db.get(Agent, agent_id)
-    if not agent:
-        raise HTTPException(status_code=404, detail="Agent not found")
-    return agent
+async def get_agent(
+    agent_id: uuid.UUID,
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
+):
+    return await _load_agent(agent_id, ctx, db)
 
 
 @router.patch("/{agent_id}", response_model=AgentOut)
 async def update_agent(
-    agent_id: uuid.UUID, body: AgentUpdate, db: AsyncSession = Depends(get_db)
+    agent_id: uuid.UUID,
+    body: AgentUpdate,
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
 ):
-    agent = await db.get(Agent, agent_id)
-    if not agent:
-        raise HTTPException(status_code=404, detail="Agent not found")
+    require_role(ctx, "editor")
+    agent = await _load_agent(agent_id, ctx, db)
     for field, value in body.model_dump(exclude_unset=True).items():
         setattr(agent, field, value)
     await db.flush()
@@ -77,12 +103,47 @@ async def update_agent(
     return agent
 
 
+@router.post("/{agent_id}/publish", response_model=AgentOut)
+async def publish_agent(
+    agent_id: uuid.UUID,
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
+):
+    """Publish to the cross-workspace catalog (admin+)."""
+    require_role(ctx, "admin")
+    agent = await _load_agent(agent_id, ctx, db)
+    agent.visibility = "catalog"
+    agent.published_at = datetime.now(timezone.utc)
+    await db.flush()
+    await db.refresh(agent)
+    return agent
+
+
+@router.post("/{agent_id}/unpublish", response_model=AgentOut)
+async def unpublish_agent(
+    agent_id: uuid.UUID,
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
+):
+    """Remove from the catalog. Existing installs in other workspaces keep their copies."""
+    require_role(ctx, "admin")
+    agent = await _load_agent(agent_id, ctx, db)
+    agent.visibility = "private"
+    agent.published_at = None
+    await db.flush()
+    await db.refresh(agent)
+    return agent
+
+
 @router.post("/{agent_id}/refresh-card", response_model=AgentOut)
-async def refresh_agent_card(agent_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def refresh_agent_card(
+    agent_id: uuid.UUID,
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
+):
     """Re-fetch and cache the A2A agent card from /.well-known/agent.json."""
-    agent = await db.get(Agent, agent_id)
-    if not agent:
-        raise HTTPException(status_code=404, detail="Agent not found")
+    require_role(ctx, "editor")
+    agent = await _load_agent(agent_id, ctx, db)
     if not agent.url:
         raise HTTPException(status_code=422, detail="Agent has no URL to fetch card from")
 
@@ -99,13 +160,18 @@ async def refresh_agent_card(agent_id: uuid.UUID, db: AsyncSession = Depends(get
 
 
 @router.get("/{agent_id}/usages")
-async def get_agent_usages(agent_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def get_agent_usages(
+    agent_id: uuid.UUID,
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
+):
     """
-    Return a list of graphs that reference this agent by UUID in their node config.
+    Return graphs in the active workspace that reference this agent by UUID.
     Scans Graph.definition_json — the denormalized snapshot the runner uses.
     Used by the UI to warn before deletion.
     """
-    result = await db.execute(select(Graph))
+    await _load_agent(agent_id, ctx, db)
+    result = await db.execute(select(Graph).where(Graph.org_id == ctx.workspace.id))
     target = str(agent_id)
     usages: list[dict] = []
     for g in result.scalars().all():
@@ -121,8 +187,11 @@ async def get_agent_usages(agent_id: uuid.UUID, db: AsyncSession = Depends(get_d
 
 
 @router.delete("/{agent_id}", status_code=204)
-async def delete_agent(agent_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    agent = await db.get(Agent, agent_id)
-    if not agent:
-        raise HTTPException(status_code=404, detail="Agent not found")
+async def delete_agent(
+    agent_id: uuid.UUID,
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+    db: AsyncSession = Depends(get_db),
+):
+    require_role(ctx, "editor")
+    agent = await _load_agent(agent_id, ctx, db)
     await db.delete(agent)

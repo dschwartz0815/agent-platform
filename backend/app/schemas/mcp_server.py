@@ -12,6 +12,7 @@ class MCPServerBase(BaseModel):
     command: str | None = None
     args: list[str] | None = None
     env_vars: dict[str, str] | None = None
+    tags: list[str] | None = None
 
     @model_validator(mode="after")
     def check_transport_fields(self):
@@ -33,11 +34,15 @@ class MCPServerUpdate(BaseModel):
     command: str | None = None
     args: list[str] | None = None
     env_vars: dict[str, str] | None = None
+    tags: list[str] | None = None
 
 
 class MCPServerOut(MCPServerBase):
     id: uuid.UUID
     tools_json: list | None = None
+    visibility: str = "private"
+    published_at: datetime | None = None
+    source_id: uuid.UUID | None = None
     created_by: uuid.UUID
     org_id: uuid.UUID
     created_at: datetime

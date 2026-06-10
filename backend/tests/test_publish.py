@@ -100,7 +100,9 @@ async def test_publish_empty_draft_rejected(client, db_session):
     assert "at least one node" in r.json()["error"]
 
 
-async def test_publish_graph_not_found(client):
+async def test_publish_graph_not_found(client, db_session):
+    db_session.add(Org(id=DEV_ORG_ID, name="T", slug="test"))
+    await db_session.flush()
     r = await client.post(
         f"/api/v1/graphs/{uuid.uuid4()}/publish",
         json={},

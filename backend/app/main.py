@@ -16,7 +16,17 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from app.config import settings
 from app.db import engine
 from app.logging_config import configure_logging, request_id_var
-from app.routers import agents, api_keys, execution, graphs, mcp_servers, public_runs, runs
+from app.routers import (
+    agents,
+    api_keys,
+    catalog,
+    execution,
+    graphs,
+    mcp_servers,
+    public_runs,
+    runs,
+    workspaces,
+)
 
 configure_logging(settings.log_level)
 log = logging.getLogger(__name__)
@@ -107,6 +117,8 @@ app.include_router(agents.router, prefix="/api/v1")
 app.include_router(mcp_servers.router, prefix="/api/v1")
 app.include_router(runs.router, prefix="/api/v1")
 app.include_router(api_keys.router, prefix="/api/v1")
+app.include_router(workspaces.router, prefix="/api/v1")
+app.include_router(catalog.router, prefix="/api/v1")
 app.include_router(public_runs.router)  # no prefix — exposes /v1/run/...
 
 
@@ -126,12 +138,19 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException) 
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
-    log.warning("validation_error", extra={"errors": exc.errors()})
+    # Pydantic v2 puts the raising exception object in ctx — stringify so the
+    # payload is JSON-serializable.
+    details = []
+    for err in exc.errors():
+        if "ctx" in err:
+            err = {**err, "ctx": {k: str(v) for k, v in err["ctx"].items()}}
+        details.append(err)
+    log.warning("validation_error", extra={"errors": details})
     return JSONResponse(
         status_code=422,
         content={
             "error": "Validation error",
-            "details": exc.errors(),
+            "details": details,
             "request_id": request_id_var.get("") or None,
         },
     )

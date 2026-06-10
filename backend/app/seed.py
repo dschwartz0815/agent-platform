@@ -41,7 +41,7 @@ from app.db import AsyncSessionLocal
 from app.models.agent import Agent
 from app.models.graph import Graph, GraphEdge, GraphNode
 from app.models.mcp_server import MCPServer
-from app.models.user import Org, User
+from app.models.user import Org, TenantGroupMapping, User
 
 log = logging.getLogger(__name__)
 
@@ -53,6 +53,21 @@ SEED_MCP_SERVER_ID = uuid.UUID("00000000-0000-0000-0000-000000000010")
 SEED_A2A_AGENT_ID  = uuid.UUID("00000000-0000-0000-0000-000000000011")
 SEED_GRAPH_ID      = uuid.UUID("00000000-0000-0000-0000-000000000020")
 SEED_API_KEY_ID    = uuid.UUID("00000000-0000-0000-0000-000000000030")
+
+# Second workspace + AD group mappings — demonstrates AD-group-driven
+# multi-tenancy out of the box. The dev fallback identity belongs to
+# 'agent-platform-admins' and 'agent-platform-users', so it owns the Demo
+# workspace but cannot see ML Research (mapped to 'ml-research-team').
+SEED_ORG2_ID = uuid.UUID("00000000-0000-0000-0000-000000000003")
+SEED_MAPPING_DEMO_OWNER_ID  = uuid.UUID("00000000-0000-0000-0000-000000000040")
+SEED_MAPPING_DEMO_EDITOR_ID = uuid.UUID("00000000-0000-0000-0000-000000000041")
+SEED_MAPPING_ML_OWNER_ID    = uuid.UUID("00000000-0000-0000-0000-000000000042")
+
+SEED_GROUP_MAPPINGS = [
+    {"id": SEED_MAPPING_DEMO_OWNER_ID,  "org_id": DEV_ORG_ID,   "ad_group": "agent-platform-admins", "role": "owner"},
+    {"id": SEED_MAPPING_DEMO_EDITOR_ID, "org_id": DEV_ORG_ID,   "ad_group": "agent-platform-users",  "role": "editor"},
+    {"id": SEED_MAPPING_ML_OWNER_ID,    "org_id": SEED_ORG2_ID, "ad_group": "ml-research-team",      "role": "owner"},
+]
 # The plaintext for the seed key is deterministic so curl examples in docs
 # and the readme can reference it. This is ONLY safe because it's a local-dev
 # key seeded in DEBUG mode. Production deployments never run the seed.
@@ -155,6 +170,8 @@ def _desired_mcp_server() -> dict:
         "command":    sys.executable,
         "args":       [SEED_MCP_SCRIPT],
         "env_vars":   None,
+        "visibility": "catalog",
+        "tags":       ["demo", "dependencies", "ops"],
     }
 
 
@@ -168,6 +185,8 @@ def _desired_agent() -> dict:
         "agent_type":    "http",
         "url":           SEED_A2A_URL,
         "agent_card_url": f"{SEED_A2A_URL}/.well-known/agent.json",
+        "visibility":    "catalog",
+        "tags":          ["demo", "risk-assessment", "a2a"],
     }
 
 
@@ -362,16 +381,43 @@ def _build_definition(nodes_data: list[dict], edges_data: list[dict]) -> dict:
 # ---------------------------------------------------------------------------
 
 async def _upsert_org(db, stats: SeedStats) -> None:
-    org = await db.get(Org, DEV_ORG_ID)
-    if not org:
-        db.add(Org(id=DEV_ORG_ID, name="Demo Org", slug="demo"))
-        stats["inserted"] += 1
-    else:
-        changed = False
-        if org.slug != "demo":
-            org.slug = "demo"
-            changed = True
-        if changed:
+    desired_orgs = [
+        {
+            "id": DEV_ORG_ID,
+            "name": "Demo Workspace",
+            "slug": "demo",
+            "description": "Default workspace for the seeded demo graph and registries.",
+        },
+        {
+            "id": SEED_ORG2_ID,
+            "name": "ML Research",
+            "slug": "ml-research",
+            "description": "Second seeded workspace — demonstrates AD-group tenant isolation.",
+        },
+    ]
+    for desired in desired_orgs:
+        org = await db.get(Org, desired["id"])
+        fields = {k: v for k, v in desired.items() if k != "id"}
+        if not org:
+            db.add(Org(**desired))
+            stats["inserted"] += 1
+        elif _fields_changed(org, fields):
+            _apply_fields(org, fields)
+            stats["updated"] += 1
+        else:
+            stats["unchanged"] += 1
+
+
+async def _upsert_group_mappings(db, stats: SeedStats) -> None:
+    """AD group → workspace/role mappings (membership source of truth)."""
+    for desired in SEED_GROUP_MAPPINGS:
+        mapping = await db.get(TenantGroupMapping, desired["id"])
+        fields = {k: v for k, v in desired.items() if k != "id"}
+        if not mapping:
+            db.add(TenantGroupMapping(created_by=DEV_USER_ID, **desired))
+            stats["inserted"] += 1
+        elif _fields_changed(mapping, fields):
+            _apply_fields(mapping, fields)
             stats["updated"] += 1
         else:
             stats["unchanged"] += 1
@@ -384,6 +430,7 @@ async def _upsert_user(db, stats: SeedStats) -> None:
             id=DEV_USER_ID,
             email="dev@example.com",
             display_name="Dev User",
+            ad_groups=["agent-platform-admins", "agent-platform-users"],
             org_id=DEV_ORG_ID,
         ))
         stats["inserted"] += 1
@@ -455,6 +502,17 @@ async def _probe_agent_card(agent: Agent) -> None:
             log.info("agent_card_probed", extra={"agent": agent.name})
     except Exception as exc:
         log.warning("agent_card_probe_failed", extra={"agent": agent.name, "error": str(exc)})
+
+
+async def _ensure_catalog_published_at(db) -> None:
+    """Stamp published_at on the catalog-visible seed entries (kept out of the
+    desired-state dicts because the timestamp is dynamic)."""
+    from datetime import datetime, timezone
+
+    for model, row_id in ((MCPServer, SEED_MCP_SERVER_ID), (Agent, SEED_A2A_AGENT_ID)):
+        row = await db.get(model, row_id)
+        if row and row.visibility == "catalog" and row.published_at is None:
+            row.published_at = datetime.now(timezone.utc)
 
 
 async def _upsert_graph(db, stats: SeedStats) -> None:
@@ -614,10 +672,16 @@ async def seed() -> None:
         await _upsert_user(db, stats)
         await db.flush()
 
+        await _upsert_group_mappings(db, stats)
+        await db.flush()
+
         await _upsert_mcp_server(db, stats)
         await db.flush()
 
         await _upsert_agent(db, stats)
+        await db.flush()
+
+        await _ensure_catalog_published_at(db)
         await db.flush()
 
         await _upsert_graph(db, stats)

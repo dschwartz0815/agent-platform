@@ -134,6 +134,8 @@ async def test_get_run_detail_includes_steps(client, db_session):
     assert body["token_usage"]["input_tokens"] == 10
 
 
-async def test_get_run_not_found(client):
+async def test_get_run_not_found(client, db_session):
+    db_session.add(Org(id=DEV_ORG_ID, name="T", slug="test"))
+    await db_session.flush()
     r = await client.get(f"/api/v1/runs/{uuid.uuid4()}")
     assert r.status_code == 404

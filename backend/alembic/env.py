@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 # Pull in all models so their tables are in metadata
 from app.db import Base
-from app.models import agent, graph, mcp_server, user  # noqa: F401
+from app.models import agent, api_key, graph, mcp_server, run, user  # noqa: F401
 
 config = context.config
 

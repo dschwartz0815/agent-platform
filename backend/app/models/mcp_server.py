@@ -40,6 +40,13 @@ class MCPServer(Base):
     # Cached tool list — populated on registration and refreshable via /refresh-tools
     tools_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
+    # Catalog — 'private' (workspace-only) | 'catalog' (discoverable by all workspaces)
+    visibility: Mapped[str] = mapped_column(String(16), nullable=False, default="private")
+    tags: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Lineage: set when this row was installed from a catalog entry in another workspace
+    source_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+
     # Ownership
     created_by: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id"), nullable=False)
     org_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("orgs.id"), nullable=False)

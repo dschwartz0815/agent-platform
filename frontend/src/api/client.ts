@@ -1,4 +1,5 @@
 import axios from "axios";
+import { identityHeaders } from "../identity";
 import type {
   Agent,
   AgentCreate,
@@ -6,7 +7,12 @@ import type {
   ApiKey,
   ApiKeyCreate,
   ApiKeyCreated,
+  CatalogEntry,
   Graph,
+  GroupMapping,
+  Me,
+  Workspace,
+  WorkspaceRole,
   GraphPublishBody,
   GraphSummary,
   GraphVersion,
@@ -25,6 +31,66 @@ import type {
 const api = axios.create({
   baseURL: "/api/v1",
 });
+
+// Attach identity (dev simulation) + active workspace headers to every call
+api.interceptors.request.use((config) => {
+  for (const [k, v] of Object.entries(identityHeaders())) {
+    config.headers.set(k, v);
+  }
+  return config;
+});
+
+// Identity / workspaces
+export const getMe = (): Promise<Me> => api.get("/me").then((r) => r.data);
+
+export const listWorkspaces = (): Promise<Workspace[]> =>
+  api.get("/workspaces").then((r) => r.data);
+
+export const getCurrentWorkspace = (): Promise<Workspace> =>
+  api.get("/workspaces/current").then((r) => r.data);
+
+export const createWorkspace = (body: {
+  name: string;
+  slug: string;
+  description?: string | null;
+  owner_group: string;
+}): Promise<Workspace> => api.post("/workspaces", body).then((r) => r.data);
+
+export const listGroupMappings = (workspaceId: string): Promise<GroupMapping[]> =>
+  api.get(`/workspaces/${workspaceId}/group-mappings`).then((r) => r.data);
+
+export const createGroupMapping = (
+  workspaceId: string,
+  body: { ad_group: string; role: WorkspaceRole }
+): Promise<GroupMapping> =>
+  api.post(`/workspaces/${workspaceId}/group-mappings`, body).then((r) => r.data);
+
+export const deleteGroupMapping = (workspaceId: string, mappingId: string): Promise<void> =>
+  api.delete(`/workspaces/${workspaceId}/group-mappings/${mappingId}`).then(() => undefined);
+
+// Catalog
+export const listCatalog = (entryType?: "agent" | "mcp_server"): Promise<CatalogEntry[]> =>
+  api
+    .get(`/catalog${entryType ? `?entry_type=${entryType}` : ""}`)
+    .then((r) => r.data);
+
+export const installCatalogAgent = (id: string): Promise<Agent> =>
+  api.post(`/catalog/agents/${id}/install`).then((r) => r.data);
+
+export const installCatalogMCPServer = (id: string): Promise<MCPServer> =>
+  api.post(`/catalog/mcp-servers/${id}/install`).then((r) => r.data);
+
+export const publishAgent = (id: string): Promise<Agent> =>
+  api.post(`/agents/${id}/publish`).then((r) => r.data);
+
+export const unpublishAgent = (id: string): Promise<Agent> =>
+  api.post(`/agents/${id}/unpublish`).then((r) => r.data);
+
+export const publishMCPServer = (id: string): Promise<MCPServer> =>
+  api.post(`/mcp-servers/${id}/publish`).then((r) => r.data);
+
+export const unpublishMCPServer = (id: string): Promise<MCPServer> =>
+  api.post(`/mcp-servers/${id}/unpublish`).then((r) => r.data);
 
 // Graphs
 export const listGraphs = (): Promise<GraphSummary[]> =>
@@ -137,7 +203,7 @@ export function streamRun(
 
   fetch(`/api/v1/graphs/${graphId}/run`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...identityHeaders() },
     body: JSON.stringify({ input }),
     signal: controller.signal,
   })

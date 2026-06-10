@@ -1,3 +1,53 @@
+// ---------------------------------------------------------------------------
+// Identity / workspaces (multi-tenancy from AD groups)
+// ---------------------------------------------------------------------------
+
+export type WorkspaceRole = "viewer" | "editor" | "admin" | "owner";
+
+export interface Workspace {
+  id: string;
+  name: string;
+  slug: string;
+  description: string | null;
+  created_at: string;
+  role: WorkspaceRole; // caller's effective role, derived from AD groups
+}
+
+export interface Me {
+  id: string;
+  email: string;
+  display_name: string;
+  ad_groups: string[];
+  workspaces: Workspace[];
+}
+
+export interface GroupMapping {
+  id: string;
+  org_id: string;
+  ad_group: string;
+  role: WorkspaceRole;
+  created_at: string;
+}
+
+export interface CatalogEntry {
+  id: string;
+  entry_type: "agent" | "mcp_server";
+  name: string;
+  description: string | null;
+  tags: string[] | null;
+  published_at: string | null;
+  workspace_id: string;
+  workspace_name: string;
+  workspace_slug: string;
+  owned_by_caller_workspace: boolean;
+  agent_type: string | null;
+  model: string | null;
+  transport: string | null;
+  tool_count: number | null;
+}
+
+export type Visibility = "private" | "catalog";
+
 export interface GraphNode {
   id: string;
   node_key: string;
@@ -68,6 +118,10 @@ export interface MCPServer {
   args: string[] | null;
   env_vars: Record<string, string> | null;
   tools_json: MCPTool[] | null;
+  visibility: Visibility;
+  tags: string[] | null;
+  published_at: string | null;
+  source_id: string | null;
   created_by: string;
   org_id: string;
   created_at: string;
@@ -83,6 +137,10 @@ export interface Agent {
   url: string | null;
   agent_card_url: string | null;
   agent_card_json: Record<string, unknown> | null;
+  visibility: Visibility;
+  tags: string[] | null;
+  published_at: string | null;
+  source_id: string | null;
   created_by: string;
   org_id: string;
   created_at: string;
